@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { scoreDay, findBestWindow, generateRecommendation, formatDate } from './scoring.js';
+import { scoreDay, findBestWindow, generateRecommendation, formatDate, type ForecastDay } from './scoring';
 
 // ── Helper to build a day object for findBestWindow / generateRecommendation ──
-function day(date, tempLow, tempHigh) {
+function day(date: string, tempLow: number, tempHigh: number): ForecastDay {
   const { rating, score } = scoreDay(tempLow, tempHigh);
-  return { date, tempLow, tempHigh, rating, score };
+  return { date, tempLow, tempHigh, summary: '', icon: '', rating, score };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -147,9 +147,9 @@ describe('findBestWindow', () => {
     ];
     const result = findBestWindow(days);
     expect(result).not.toBeNull();
-    expect(result.start).toBe('2026-02-18');
-    expect(result.end).toBe('2026-02-18');
-    expect(result.days).toHaveLength(1);
+    expect(result!.start).toBe('2026-02-18');
+    expect(result!.end).toBe('2026-02-18');
+    expect(result!.days).toHaveLength(1);
   });
 
   it('returns multi-day consecutive window', () => {
@@ -160,9 +160,9 @@ describe('findBestWindow', () => {
       day('2026-02-20', 3, 10),    // poor
     ];
     const result = findBestWindow(days);
-    expect(result.start).toBe('2026-02-17');
-    expect(result.end).toBe('2026-02-19');
-    expect(result.days).toHaveLength(3);
+    expect(result!.start).toBe('2026-02-17');
+    expect(result!.end).toBe('2026-02-19');
+    expect(result!.days).toHaveLength(3);
   });
 
   it('picks the longer window when there are two runs', () => {
@@ -174,8 +174,8 @@ describe('findBestWindow', () => {
       day('2026-02-21', -6, 8),    // excellent
     ];
     const result = findBestWindow(days);
-    expect(result.start).toBe('2026-02-19');
-    expect(result.days).toHaveLength(3);
+    expect(result!.start).toBe('2026-02-19');
+    expect(result!.days).toHaveLength(3);
   });
 
   it('picks higher total score when runs are equal length', () => {
@@ -188,8 +188,8 @@ describe('findBestWindow', () => {
     ];
     const result = findBestWindow(days);
     // Both runs are length 2, but second has score 6 vs 4
-    expect(result.start).toBe('2026-02-20');
-    expect(result.totalScore).toBe(6);
+    expect(result!.start).toBe('2026-02-20');
+    expect(result!.totalScore).toBe(6);
   });
 
   it('handles trailing run (no poor day at end)', () => {
@@ -199,9 +199,9 @@ describe('findBestWindow', () => {
       day('2026-02-19', -4, 6),    // excellent
     ];
     const result = findBestWindow(days);
-    expect(result.start).toBe('2026-02-18');
-    expect(result.end).toBe('2026-02-19');
-    expect(result.days).toHaveLength(2);
+    expect(result!.start).toBe('2026-02-18');
+    expect(result!.end).toBe('2026-02-19');
+    expect(result!.days).toHaveLength(2);
   });
 
   it('handles empty days array', () => {
@@ -214,8 +214,8 @@ describe('findBestWindow', () => {
       day('2026-02-18', -5, 7),    // excellent (score 3)
     ];
     const result = findBestWindow(days);
-    expect(result.days).toHaveLength(2);
-    expect(result.totalScore).toBe(5);
+    expect(result!.days).toHaveLength(2);
+    expect(result!.totalScore).toBe(5);
   });
 });
 

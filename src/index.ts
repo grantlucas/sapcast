@@ -1,16 +1,47 @@
 // Tapping Time — Cloudflare Worker
 // Serves the frontend and proxies/caches Pirate Weather API requests
 
-import { scoreDay, findBestWindow, generateRecommendation } from './scoring.js';
+import {
+  scoreDay,
+  findBestWindow,
+  generateRecommendation,
+  type ForecastDay,
+  type Rating,
+} from './scoring';
+
+interface Env {
+  FORECAST_CACHE: KVNamespace;
+  PIRATE_WEATHER_API_KEY: string;
+}
+
+interface CurrentConditions {
+  temperature: number | null;
+  summary: string;
+  icon: string;
+}
+
+interface ForecastResult {
+  current: CurrentConditions;
+  today: ForecastDay | null;
+  days: ForecastDay[];
+  bestWindow: {
+    startDate: string;
+    endDate: string;
+    length: number;
+    avgScore: number;
+  } | null;
+  recommendation: { type: string; message: string };
+  cached: boolean;
+}
 
 const CACHE_TTL = 10800; // 3 hours in seconds
 
 // ── API handler ────────────────────────────────────────────────────────────
 
-async function handleForecast(request, env) {
+async function handleForecast(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const lat = parseFloat(url.searchParams.get('lat'));
-  const lon = parseFloat(url.searchParams.get('lon'));
+  const lat = parseFloat(url.searchParams.get('lat') ?? '');
+  const lon = parseFloat(url.searchParams.get('lon') ?? '');
 
   if (isNaN(lat) || isNaN(lon)) {
     return Response.json({ error: 'Missing or invalid lat/lon parameters' }, { status: 400 });
@@ -25,7 +56,7 @@ async function handleForecast(request, env) {
   if (env.FORECAST_CACHE) {
     const cached = await env.FORECAST_CACHE.get(cacheKey, 'json');
     if (cached) {
-      return Response.json({ ...cached, cached: true });
+      return Response.json({ ...(cached as ForecastResult), cached: true });
     }
   }
 
@@ -36,10 +67,10 @@ async function handleForecast(request, env) {
   }
 
   const apiUrl = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
-  let apiResponse;
+  let apiResponse: Response;
   try {
     apiResponse = await fetch(apiUrl);
-  } catch (err) {
+  } catch {
     return Response.json({ error: 'Failed to reach weather API' }, { status: 502 });
   }
 
@@ -47,28 +78,28 @@ async function handleForecast(request, env) {
     return Response.json({ error: `Weather API returned ${apiResponse.status}` }, { status: 502 });
   }
 
-  const weather = await apiResponse.json();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const weather: any = await apiResponse.json();
 
   // Process current conditions
   const currently = weather.currently || {};
-  const todayDaily = weather.daily?.data?.[0] || {};
-
-  const current = {
+  const current: CurrentConditions = {
     temperature: currently.temperature ?? null,
     summary: currently.summary ?? '',
     icon: currently.icon ?? '',
   };
 
   // Process daily forecast
-  const dailyData = weather.daily?.data || [];
-  const days = dailyData.map(d => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dailyData: any[] = weather.daily?.data || [];
+  const days: ForecastDay[] = dailyData.map(d => {
     const date = new Date(d.time * 1000).toISOString().split('T')[0];
-    const tempHigh = d.temperatureHigh ?? d.temperatureMax ?? null;
-    const tempLow = d.temperatureLow ?? d.temperatureMin ?? null;
+    const tempHigh: number | null = d.temperatureHigh ?? d.temperatureMax ?? null;
+    const tempLow: number | null = d.temperatureLow ?? d.temperatureMin ?? null;
 
     const { rating, score } = (tempHigh !== null && tempLow !== null)
       ? scoreDay(tempLow, tempHigh)
-      : { rating: 'unknown', score: 0 };
+      : { rating: 'unknown' as Rating, score: 0 };
 
     return {
       date,
@@ -85,7 +116,7 @@ async function handleForecast(request, env) {
   const bestWindow = findBestWindow(days);
   const recommendation = generateRecommendation(days, bestWindow);
 
-  const result = {
+  const result: ForecastResult = {
     current,
     today: days[0] || null,
     days,
@@ -109,7 +140,7 @@ async function handleForecast(request, env) {
 
 // ── Frontend HTML ──────────────────────────────────────────────────────────
 
-function getHTML() {
+function getHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -700,7 +731,7 @@ function getHTML() {
 // ── Worker entry point ─────────────────────────────────────────────────────
 
 export default {
-  async fetch(request, env) {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/forecast') {
