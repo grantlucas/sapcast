@@ -14,6 +14,7 @@ import {
 interface Env {
   FORECAST_CACHE: KVNamespace;
   PIRATE_WEATHER_API_KEY: string;
+  POSTHOG_API_KEY?: string;
 }
 
 interface CurrentConditions {
@@ -145,7 +146,10 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
 
 // ── Frontend HTML ──────────────────────────────────────────────────────────
 
-function getHTML(): string {
+function getHTML(posthogKey?: string): string {
+  const phSnippet = posthogKey
+    ? `<script>!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+" (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys getNextSurveyStep onSessionId setPersonPropertiesForFlags".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);posthog.init('${posthogKey}',{api_host:'https://us.i.posthog.com',person_profiles:'identified_only'})</script>`
+    : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -250,6 +254,7 @@ function getHTML(): string {
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
+${phSnippet}
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -802,6 +807,85 @@ function getHTML(): string {
     .forecast-day .temps { min-width: auto; }
     .container { padding: 16px 12px; }
   }
+
+  .feedback-section {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid #e8e3de;
+  }
+
+  .feedback-prompt {
+    font-size: 0.82rem;
+    color: #6d6157;
+    margin-bottom: 8px;
+  }
+
+  .feedback-buttons {
+    display: flex;
+    gap: 8px;
+  }
+
+  .feedback-btn {
+    padding: 6px 14px;
+    border: 1px solid #d4cdc6;
+    background: #fff;
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.82rem;
+    color: #2c2520;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .feedback-btn:hover {
+    background: #f5f0eb;
+    border-color: #5C3D2E;
+  }
+
+  .feedback-detail {
+    margin-top: 8px;
+  }
+
+  .feedback-detail textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d4cdc6;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.82rem;
+    color: #2c2520;
+    resize: vertical;
+    background: #fff;
+    margin-bottom: 6px;
+  }
+
+  .feedback-detail textarea:focus {
+    outline: none;
+    border-color: #5C3D2E;
+  }
+
+  .feedback-submit-btn {
+    padding: 6px 14px;
+    background: #5C3D2E;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.82rem;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+
+  .feedback-submit-btn:hover {
+    background: #7B5440;
+  }
+
+  .feedback-thanks {
+    font-size: 0.82rem;
+    color: #5C3D2E;
+    font-weight: 500;
+  }
 </style>
 </head>
 <body>
@@ -978,6 +1062,18 @@ function getHTML(): string {
       <p class="footer-note">
         Built with care for 3 out of 52 weeks per year by <a href="https://grantlucas.com/" target="_blank" rel="noopener">Grant Lucas</a>.
       </p>
+      <div class="feedback-section">
+        <p class="feedback-prompt">Was this forecast helpful?</p>
+        <div class="feedback-buttons" id="feedback-buttons">
+          <button class="feedback-btn" onclick="submitFeedback('helpful')">&#128077; Yes, thanks!</button>
+          <button class="feedback-btn" onclick="submitFeedback('not_helpful')">&#128078; Not really</button>
+        </div>
+        <div class="feedback-detail" id="feedback-detail" style="display:none;">
+          <textarea id="feedback-text" placeholder="Any comments? (optional)" rows="2"></textarea>
+          <button class="feedback-submit-btn" onclick="sendFeedback()">Send feedback</button>
+        </div>
+        <p class="feedback-thanks" id="feedback-thanks" style="display:none;">Thanks for your feedback!</p>
+      </div>
     </footer>
   </div>
 </div>
@@ -986,6 +1082,12 @@ function getHTML(): string {
 (function() {
   let forecastData = null;
   let unit = 'C';
+
+  function safeCapture(event, props) {
+    if (typeof posthog !== 'undefined') {
+      posthog.capture(event, props || {});
+    }
+  }
 
   function toF(c) {
     return c !== null ? (c * 9/5) + 32 : null;
@@ -1075,6 +1177,9 @@ function getHTML(): string {
   }
 
   window.setUnit = function(u) {
+    if (u !== unit) {
+      safeCapture('unit_changed', { to_unit: u });
+    }
     unit = u;
     document.getElementById('btn-c').className = u === 'C' ? 'active' : '';
     document.getElementById('btn-f').className = u === 'F' ? 'active' : '';
@@ -1170,7 +1275,13 @@ function getHTML(): string {
 
       showContent();
       render();
+      safeCapture('forecast_loaded', {
+        recommendation_type: forecastData.recommendation.type,
+        best_window_days: forecastData.bestWindow ? forecastData.bestWindow.length : 0,
+        cached: forecastData.cached,
+      });
     } catch (err) {
+      safeCapture('forecast_error', { error_type: 'api_error' });
       showError(err.message);
     }
   }
@@ -1191,15 +1302,19 @@ function getHTML(): string {
       function(err) {
         switch (err.code) {
           case err.PERMISSION_DENIED:
+            safeCapture('forecast_error', { error_type: 'geolocation_denied' });
             showError('Location permission denied. Please allow location access and try again.', permissionHintHTML(detectOS()));
             break;
           case err.POSITION_UNAVAILABLE:
+            safeCapture('forecast_error', { error_type: 'geolocation_unavailable' });
             showError('Location unavailable. Please try again.');
             break;
           case err.TIMEOUT:
+            safeCapture('forecast_error', { error_type: 'geolocation_timeout' });
             showError('Location request timed out. Please try again.');
             break;
           default:
+            safeCapture('forecast_error', { error_type: 'geolocation_unknown' });
             showError('Could not detect your location.');
         }
       },
@@ -1213,6 +1328,27 @@ function getHTML(): string {
     document.getElementById('loading').style.display = 'block';
     document.getElementById('loading').querySelector('p').textContent = 'Detecting your location...';
     getLocation();
+  };
+
+  window.submitFeedback = function(type) {
+    if (typeof posthog === 'undefined') {
+      document.getElementById('feedback-buttons').style.display = 'none';
+      document.getElementById('feedback-thanks').style.display = 'block';
+      return;
+    }
+    document.getElementById('feedback-buttons').style.display = 'none';
+    document.getElementById('feedback-detail').style.display = 'block';
+    window._feedbackType = type;
+  };
+
+  window.sendFeedback = function() {
+    var comment = document.getElementById('feedback-text').value.trim();
+    safeCapture('feedback_submitted', {
+      rating: window._feedbackType,
+      comment: comment || null,
+    });
+    document.getElementById('feedback-detail').style.display = 'none';
+    document.getElementById('feedback-thanks').style.display = 'block';
   };
 
   if ('requestIdleCallback' in window) {
@@ -1246,7 +1382,7 @@ export default {
     }
 
     // Serve frontend for all other routes
-    return new Response(getHTML(), {
+    return new Response(getHTML(env.POSTHOG_API_KEY), {
       headers: { 'Content-Type': 'text/html;charset=UTF-8' },
     });
   },
