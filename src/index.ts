@@ -823,6 +823,7 @@ ${phSnippet}
   .feedback-buttons {
     display: flex;
     gap: 8px;
+    margin-bottom: 10px;
   }
 
   .feedback-btn {
@@ -842,8 +843,10 @@ ${phSnippet}
     border-color: #5C3D2E;
   }
 
-  .feedback-detail {
-    margin-top: 8px;
+  .feedback-btn.selected {
+    background: #5C3D2E;
+    border-color: #5C3D2E;
+    color: #fff;
   }
 
   .feedback-detail textarea {
@@ -885,6 +888,23 @@ ${phSnippet}
     font-size: 0.82rem;
     color: #5C3D2E;
     font-weight: 500;
+    margin-bottom: 6px;
+  }
+
+  .feedback-change-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: 0.82rem;
+    color: #6d6157;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .feedback-change-btn:hover {
+    color: #5C3D2E;
   }
 </style>
 </head>
@@ -1064,15 +1084,20 @@ ${phSnippet}
       </p>
       <div class="feedback-section">
         <p class="feedback-prompt">Was this forecast helpful?</p>
-        <div class="feedback-buttons" id="feedback-buttons">
-          <button class="feedback-btn" onclick="submitFeedback('helpful')">&#128077; Yes, thanks!</button>
-          <button class="feedback-btn" onclick="submitFeedback('not_helpful')">&#128078; Not really</button>
+        <div id="feedback-form">
+          <div class="feedback-buttons">
+            <button class="feedback-btn" id="fb-helpful" onclick="selectFeedback('helpful')">&#128077; Yes, thanks!</button>
+            <button class="feedback-btn" id="fb-not-helpful" onclick="selectFeedback('not_helpful')">&#128078; Not really</button>
+          </div>
+          <div class="feedback-detail">
+            <textarea id="feedback-text" placeholder="Any comments? (optional)" rows="2"></textarea>
+            <button class="feedback-submit-btn" onclick="sendFeedback()">Send feedback</button>
+          </div>
         </div>
-        <div class="feedback-detail" id="feedback-detail" style="display:none;">
-          <textarea id="feedback-text" placeholder="Any comments? (optional)" rows="2"></textarea>
-          <button class="feedback-submit-btn" onclick="sendFeedback()">Send feedback</button>
+        <div id="feedback-thanks-state" style="display:none;">
+          <p class="feedback-thanks">Thanks for your feedback!</p>
+          <button class="feedback-change-btn" onclick="resetFeedback()">Change your feedback</button>
         </div>
-        <p class="feedback-thanks" id="feedback-thanks" style="display:none;">Thanks for your feedback!</p>
       </div>
     </footer>
   </div>
@@ -1330,25 +1355,31 @@ ${phSnippet}
     getLocation();
   };
 
-  window.submitFeedback = function(type) {
-    if (typeof posthog === 'undefined') {
-      document.getElementById('feedback-buttons').style.display = 'none';
-      document.getElementById('feedback-thanks').style.display = 'block';
-      return;
-    }
-    document.getElementById('feedback-buttons').style.display = 'none';
-    document.getElementById('feedback-detail').style.display = 'block';
-    window._feedbackType = type;
+  window._feedbackType = null;
+
+  window.selectFeedback = function(type) {
+    window._feedbackType = window._feedbackType === type ? null : type;
+    document.getElementById('fb-helpful').classList.toggle('selected', window._feedbackType === 'helpful');
+    document.getElementById('fb-not-helpful').classList.toggle('selected', window._feedbackType === 'not_helpful');
   };
 
   window.sendFeedback = function() {
     var comment = document.getElementById('feedback-text').value.trim();
     safeCapture('feedback_submitted', {
-      rating: window._feedbackType,
+      rating: window._feedbackType || null,
       comment: comment || null,
     });
-    document.getElementById('feedback-detail').style.display = 'none';
-    document.getElementById('feedback-thanks').style.display = 'block';
+    document.getElementById('feedback-form').style.display = 'none';
+    document.getElementById('feedback-thanks-state').style.display = 'block';
+  };
+
+  window.resetFeedback = function() {
+    window._feedbackType = null;
+    document.getElementById('fb-helpful').classList.remove('selected');
+    document.getElementById('fb-not-helpful').classList.remove('selected');
+    document.getElementById('feedback-text').value = '';
+    document.getElementById('feedback-form').style.display = '';
+    document.getElementById('feedback-thanks-state').style.display = 'none';
   };
 
   if ('requestIdleCallback' in window) {
