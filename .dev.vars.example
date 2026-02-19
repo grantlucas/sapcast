@@ -1,1 +1,2 @@
 PIRATE_WEATHER_API_KEY=your_api_key_here
+POSTHOG_API_KEY=phc_your_posthog_project_api_key_here
