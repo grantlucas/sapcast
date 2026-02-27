@@ -165,8 +165,21 @@ async function handleGeocode(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Fetch from Nominatim (restrict to US + Canada — maple country)
-  const nominatimUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&countrycodes=us,ca&format=json&limit=1&addressdetails=1`;
+  // Route to Nominatim's postalcode param for ZIP/postal inputs (more reliable than free-form q=)
+  // US ZIP: 5 digits; Canadian postal: letter-digit-letter (FSA) or full 6-char code
+  const usZipRe = /^\d{5}(-\d{4})?$/;
+  const caPostalRe = /^[A-Za-z]\d[A-Za-z](\s*\d[A-Za-z]\d)?$/;
+
+  let nominatimUrl: string;
+  if (usZipRe.test(q)) {
+    nominatimUrl = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(q.substring(0, 5))}&countrycodes=us&format=json&limit=1&addressdetails=1`;
+  } else if (caPostalRe.test(q)) {
+    const fsa = q.replace(/\s/g, '').substring(0, 3).toUpperCase();
+    nominatimUrl = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(fsa)}&countrycodes=ca&format=json&limit=1&addressdetails=1`;
+  } else {
+    // Free-form city/region search
+    nominatimUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&countrycodes=us,ca&format=json&limit=1&addressdetails=1`;
+  }
   let resp: Response;
   try {
     resp = await fetch(nominatimUrl, {
@@ -1022,6 +1035,22 @@ ${phSnippet}
     color: #5C3D2E;
   }
 
+  .change-location-btn {
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    font-family: inherit;
+    font-size: 0.75rem;
+    color: #8B6F47;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .change-location-btn:hover {
+    color: #5C3D2E;
+  }
+
   .postal-fallback {
     margin-top: 18px;
     text-align: center;
@@ -1100,6 +1129,7 @@ ${phSnippet}
     <p>Ditch the 🔮 — let real forecast data tell you when to tap</p>
     <div class="header-bar" id="header-bar" style="display:none;">
       <span class="loc-text" id="loc-text"></span>
+      <button class="change-location-btn" onclick="changeLocation()">Change</button>
       <div class="unit-toggle">
         <button id="btn-c" class="active" onclick="setUnit('C')">°C</button>
         <button id="btn-f" onclick="setUnit('F')">°F</button>
@@ -1140,7 +1170,7 @@ ${phSnippet}
         <div class="postal-fallback">
           <div class="postal-divider">or enter a city or ZIP / postal code</div>
           <div class="postal-form">
-            <input type="text" id="postal-code" placeholder="e.g. Burlington VT or 05602" aria-label="City or ZIP / postal code" autocomplete="off">
+            <input type="text" id="postal-code" placeholder="e.g. Toronto or M5V" aria-label="City or ZIP / postal code" autocomplete="off">
             <button onclick="lookupPostalCode()">Go</button>
           </div>
         </div>
@@ -1152,7 +1182,7 @@ ${phSnippet}
         <div class="postal-fallback">
           <div class="postal-divider">or enter a city or ZIP / postal code instead</div>
           <div class="postal-form">
-            <input type="text" id="postal-code-error" placeholder="e.g. Burlington VT or 05602" aria-label="City or ZIP / postal code" autocomplete="off">
+            <input type="text" id="postal-code-error" placeholder="e.g. Toronto or M5V" aria-label="City or ZIP / postal code" autocomplete="off">
             <button onclick="lookupPostalCode('error')">Go</button>
           </div>
         </div>
@@ -1557,6 +1587,19 @@ ${phSnippet}
     document.getElementById('loading').style.display = 'block';
     document.getElementById('loading').querySelector('p').textContent = 'Detecting your location...';
     getLocation();
+  };
+
+  window.changeLocation = function() {
+    clearLocationTimer();
+    forecastData = null;
+    document.getElementById('forecast-results').style.display = 'none';
+    document.getElementById('header-bar').style.display = 'none';
+    document.getElementById('header-current').style.display = 'none';
+    document.getElementById('error').style.display = 'none';
+    document.getElementById('postal-code').value = '';
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').querySelector('p').textContent = 'Enter a location or detect automatically';
+    document.getElementById('postal-code').focus();
   };
 
   window.lookupPostalCode = function(variant) {
