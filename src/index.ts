@@ -23,6 +23,8 @@ interface CurrentConditions {
   icon: string;
 }
 
+type WeatherSource = 'pirate_weather' | 'open_meteo' | 'combined';
+
 interface ForecastResult {
   current: CurrentConditions;
   today: ForecastDay | null;
@@ -36,7 +38,7 @@ interface ForecastResult {
   recommendation: { type: string; message: string };
   seasonInfo: SeasonInfo | null;
   cached: boolean;
-  source: 'pirate_weather' | 'open_meteo';
+  source: WeatherSource;
 }
 
 // ── API response types ─────────────────────────────────────────────────────
@@ -78,36 +80,23 @@ const GEOCODE_CACHE_TTL = 2592000; // 30 days — postal code coords don't chang
 
 // ── Weather API helpers ─────────────────────────────────────────────────────
 
-function openMeteoIcon(code: number): string {
-  if (code === 0) return 'clear-day';
-  if (code <= 2) return 'partly-cloudy-day';
-  if (code === 3) return 'cloudy';
-  if (code <= 48) return 'fog';
-  if (code <= 55) return 'rain';
-  if (code <= 65) return 'rain';
-  if (code <= 77) return 'snow';
-  if (code <= 82) return 'rain';
-  if (code <= 86) return 'snow';
-  return 'rain';
-}
-
-function openMeteoSummary(code: number): string {
-  if (code === 0) return 'Clear sky';
-  if (code <= 2) return 'Partly cloudy';
-  if (code === 3) return 'Overcast';
-  if (code <= 48) return 'Foggy';
-  if (code <= 55) return 'Drizzle';
-  if (code <= 65) return 'Rain';
-  if (code <= 77) return 'Snow';
-  if (code <= 82) return 'Rain showers';
-  if (code <= 86) return 'Snow showers';
-  return 'Thunderstorm';
+function openMeteoConditions(code: number): { icon: string; summary: string } {
+  if (code === 0) return { icon: 'clear-day',          summary: 'Clear sky' };
+  if (code <= 2)  return { icon: 'partly-cloudy-day',  summary: 'Partly cloudy' };
+  if (code === 3) return { icon: 'cloudy',             summary: 'Overcast' };
+  if (code <= 48) return { icon: 'fog',                summary: 'Foggy' };
+  if (code <= 55) return { icon: 'rain',               summary: 'Drizzle' };
+  if (code <= 65) return { icon: 'rain',               summary: 'Rain' };
+  if (code <= 77) return { icon: 'snow',               summary: 'Snow' };
+  if (code <= 82) return { icon: 'rain',               summary: 'Rain showers' };
+  if (code <= 86) return { icon: 'snow',               summary: 'Snow showers' };
+  return           { icon: 'rain',               summary: 'Thunderstorm' };
 }
 
 interface WeatherData {
   current: CurrentConditions;
   days: ForecastDay[];
-  source: 'pirate_weather' | 'open_meteo';
+  source: WeatherSource;
 }
 
 async function fetchFromPirateWeather(lat: number, lon: number, apiKey: string): Promise<WeatherData | null> {
@@ -160,11 +149,11 @@ async function fetchFromOpenMeteo(lat: number, lon: number): Promise<WeatherData
   const weather: OpenMeteoResponse = await apiResponse.json();
 
   const cw = weather.current_weather ?? {};
-  const cwCode = cw.weathercode ?? 0;
+  const cwCond = openMeteoConditions(cw.weathercode ?? 0);
   const current: CurrentConditions = {
     temperature: cw.temperature ?? null,
-    summary: openMeteoSummary(cwCode),
-    icon: openMeteoIcon(cwCode),
+    summary: cwCond.summary,
+    icon: cwCond.icon,
   };
 
   const times = weather.daily?.time ?? [];
@@ -175,16 +164,55 @@ async function fetchFromOpenMeteo(lat: number, lon: number): Promise<WeatherData
   const days: ForecastDay[] = times.map((date, i) => {
     const tempHigh: number | null = highs[i] ?? null;
     const tempLow: number | null = lows[i] ?? null;
-    const code = codes[i] ?? 0;
+    const cond = openMeteoConditions(codes[i] ?? 0);
 
     const { rating, score } = (tempHigh !== null && tempLow !== null)
       ? scoreDay(tempLow, tempHigh)
       : { rating: 'unknown' as Rating, score: 0 };
 
-    return { date, tempHigh, tempLow, summary: openMeteoSummary(code), icon: openMeteoIcon(code), rating, score };
+    return { date, tempHigh, tempLow, summary: cond.summary, icon: cond.icon, rating, score };
   });
 
   return { current, days, source: 'open_meteo' };
+}
+
+// ── Weather data combining ─────────────────────────────────────────────────
+
+function avgTemp(a: number | null, b: number | null): number | null {
+  if (a !== null && b !== null) return (a + b) / 2;
+  return a ?? b;
+}
+
+function combineWeatherData(pw: WeatherData | null, om: WeatherData | null): WeatherData | null {
+  if (!pw && !om) return null;
+  if (!pw) return om;
+  if (!om) return pw;
+
+  // Both succeeded — average temperatures aligned by date, prefer PW summary/icon
+  const omByDate = new Map(om.days.map(d => [d.date, d]));
+
+  const days: ForecastDay[] = pw.days.map(pwDay => {
+    const omDay = omByDate.get(pwDay.date);
+    if (!omDay) return pwDay;
+
+    const tempHigh = avgTemp(pwDay.tempHigh, omDay.tempHigh);
+    const tempLow  = avgTemp(pwDay.tempLow,  omDay.tempLow);
+
+    const { rating, score } = (tempHigh !== null && tempLow !== null)
+      ? scoreDay(tempLow, tempHigh)
+      : { rating: 'unknown' as Rating, score: 0 };
+
+    // Prefer PW summary/icon (more descriptive); fall back to OM
+    const summary = pwDay.summary || omDay.summary;
+    const icon    = pwDay.icon    || omDay.icon;
+
+    return { date: pwDay.date, tempHigh, tempLow, summary, icon, rating, score };
+  });
+
+  // Prefer PW current conditions (richer detail); fall back to OM
+  const current = pw.current.temperature !== null ? pw.current : om.current;
+
+  return { current, days, source: 'combined' };
 }
 
 // ── API handler ────────────────────────────────────────────────────────────
@@ -211,16 +239,18 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Try Pirate Weather first, fall back to Open-Meteo
+  // Fetch both APIs in parallel; combine results for a more accurate forecast
   const apiKey = env.PIRATE_WEATHER_API_KEY;
-  let weatherData: WeatherData | null = null;
+  const [pwResult, omResult] = await Promise.allSettled([
+    apiKey ? fetchFromPirateWeather(lat, lon, apiKey) : Promise.resolve(null),
+    fetchFromOpenMeteo(lat, lon),
+  ]);
 
-  if (apiKey) {
-    weatherData = await fetchFromPirateWeather(lat, lon, apiKey);
-  }
-  if (!weatherData) {
-    weatherData = await fetchFromOpenMeteo(lat, lon);
-  }
+  const weatherData = combineWeatherData(
+    pwResult.status === 'fulfilled' ? pwResult.value : null,
+    omResult.status === 'fulfilled' ? omResult.value : null,
+  );
+
   if (!weatherData) {
     return Response.json({ error: 'Failed to reach weather API' }, { status: 502 });
   }
@@ -1470,7 +1500,9 @@ ${phSnippet}
     // Weather source attribution
     var srcEl = document.getElementById('weather-source-attr');
     if (srcEl) {
-      if (d.source === 'open_meteo') {
+      if (d.source === 'combined') {
+        srcEl.innerHTML = 'Weather data averaged from <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a> &amp; <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.';
+      } else if (d.source === 'open_meteo') {
         srcEl.innerHTML = 'Weather data provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.';
       } else {
         srcEl.innerHTML = 'Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>.';
