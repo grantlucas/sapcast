@@ -36,10 +36,156 @@ interface ForecastResult {
   recommendation: { type: string; message: string };
   seasonInfo: SeasonInfo | null;
   cached: boolean;
+  source: 'pirate_weather' | 'open_meteo';
+}
+
+// ── API response types ─────────────────────────────────────────────────────
+
+interface PirateWeatherResponse {
+  currently?: {
+    temperature?: number;
+    summary?: string;
+    icon?: string;
+  };
+  daily?: {
+    data?: Array<{
+      time: number;
+      temperatureHigh?: number;
+      temperatureMax?: number;
+      temperatureLow?: number;
+      temperatureMin?: number;
+      summary?: string;
+      icon?: string;
+    }>;
+  };
+}
+
+interface OpenMeteoResponse {
+  current_weather?: {
+    temperature?: number;
+    weathercode?: number;
+  };
+  daily?: {
+    time?: string[];
+    temperature_2m_max?: (number | null)[];
+    temperature_2m_min?: (number | null)[];
+    weathercode?: number[];
+  };
 }
 
 const CACHE_TTL = 10800; // 3 hours in seconds
 const GEOCODE_CACHE_TTL = 2592000; // 30 days — postal code coords don't change
+
+// ── Weather API helpers ─────────────────────────────────────────────────────
+
+function openMeteoIcon(code: number): string {
+  if (code === 0) return 'clear-day';
+  if (code <= 2) return 'partly-cloudy-day';
+  if (code === 3) return 'cloudy';
+  if (code <= 48) return 'fog';
+  if (code <= 55) return 'rain';
+  if (code <= 65) return 'rain';
+  if (code <= 77) return 'snow';
+  if (code <= 82) return 'rain';
+  if (code <= 86) return 'snow';
+  return 'rain';
+}
+
+function openMeteoSummary(code: number): string {
+  if (code === 0) return 'Clear sky';
+  if (code <= 2) return 'Partly cloudy';
+  if (code === 3) return 'Overcast';
+  if (code <= 48) return 'Foggy';
+  if (code <= 55) return 'Drizzle';
+  if (code <= 65) return 'Rain';
+  if (code <= 77) return 'Snow';
+  if (code <= 82) return 'Rain showers';
+  if (code <= 86) return 'Snow showers';
+  return 'Thunderstorm';
+}
+
+interface WeatherData {
+  current: CurrentConditions;
+  days: ForecastDay[];
+  source: 'pirate_weather' | 'open_meteo';
+}
+
+async function fetchFromPirateWeather(lat: number, lon: number, apiKey: string): Promise<WeatherData | null> {
+  const apiUrl = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
+  let apiResponse: Response;
+  try {
+    apiResponse = await fetch(apiUrl);
+  } catch {
+    return null;
+  }
+  if (!apiResponse.ok) return null;
+
+  const weather: PirateWeatherResponse = await apiResponse.json();
+
+  const currently = weather.currently ?? {};
+  const current: CurrentConditions = {
+    temperature: currently.temperature ?? null,
+    summary: currently.summary ?? '',
+    icon: currently.icon ?? '',
+  };
+
+  const dailyData = weather.daily?.data ?? [];
+  const days: ForecastDay[] = dailyData.map(d => {
+    const date = new Date(d.time * 1000).toISOString().split('T')[0];
+    const tempHigh: number | null = d.temperatureHigh ?? d.temperatureMax ?? null;
+    const tempLow: number | null = d.temperatureLow ?? d.temperatureMin ?? null;
+
+    const { rating, score } = (tempHigh !== null && tempLow !== null)
+      ? scoreDay(tempLow, tempHigh)
+      : { rating: 'unknown' as Rating, score: 0 };
+
+    return { date, tempHigh, tempLow, summary: d.summary ?? '', icon: d.icon ?? '', rating, score };
+  });
+
+  return { current, days, source: 'pirate_weather' };
+}
+
+async function fetchFromOpenMeteo(lat: number, lon: number): Promise<WeatherData | null> {
+  const apiUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
+    + `&daily=temperature_2m_max,temperature_2m_min,weathercode`
+    + `&current_weather=true&timezone=auto&forecast_days=8`;
+  let apiResponse: Response;
+  try {
+    apiResponse = await fetch(apiUrl);
+  } catch {
+    return null;
+  }
+  if (!apiResponse.ok) return null;
+
+  const weather: OpenMeteoResponse = await apiResponse.json();
+
+  const cw = weather.current_weather ?? {};
+  const cwCode = cw.weathercode ?? 0;
+  const current: CurrentConditions = {
+    temperature: cw.temperature ?? null,
+    summary: openMeteoSummary(cwCode),
+    icon: openMeteoIcon(cwCode),
+  };
+
+  const times = weather.daily?.time ?? [];
+  const highs = weather.daily?.temperature_2m_max ?? [];
+  const lows = weather.daily?.temperature_2m_min ?? [];
+  const codes = weather.daily?.weathercode ?? [];
+
+  const days: ForecastDay[] = times.map((date, i) => {
+    const tempHigh: number | null = highs[i] ?? null;
+    const tempLow: number | null = lows[i] ?? null;
+    const code = codes[i] ?? 0;
+
+    const { rating, score } = (tempHigh !== null && tempLow !== null)
+      ? scoreDay(tempLow, tempHigh)
+      : { rating: 'unknown' as Rating, score: 0 };
+
+    return { date, tempHigh, tempLow, summary: openMeteoSummary(code), icon: openMeteoIcon(code), rating, score };
+  });
+
+  return { current, days, source: 'open_meteo' };
+}
 
 // ── API handler ────────────────────────────────────────────────────────────
 
@@ -65,57 +211,21 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Fetch from Pirate Weather
+  // Try Pirate Weather first, fall back to Open-Meteo
   const apiKey = env.PIRATE_WEATHER_API_KEY;
-  if (!apiKey) {
-    return Response.json({ error: 'API key not configured' }, { status: 500 });
-  }
+  let weatherData: WeatherData | null = null;
 
-  const apiUrl = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
-  let apiResponse: Response;
-  try {
-    apiResponse = await fetch(apiUrl);
-  } catch {
+  if (apiKey) {
+    weatherData = await fetchFromPirateWeather(lat, lon, apiKey);
+  }
+  if (!weatherData) {
+    weatherData = await fetchFromOpenMeteo(lat, lon);
+  }
+  if (!weatherData) {
     return Response.json({ error: 'Failed to reach weather API' }, { status: 502 });
   }
 
-  if (!apiResponse.ok) {
-    return Response.json({ error: `Weather API returned ${apiResponse.status}` }, { status: 502 });
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const weather: any = await apiResponse.json();
-
-  // Process current conditions
-  const currently = weather.currently || {};
-  const current: CurrentConditions = {
-    temperature: currently.temperature ?? null,
-    summary: currently.summary ?? '',
-    icon: currently.icon ?? '',
-  };
-
-  // Process daily forecast
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dailyData: any[] = weather.daily?.data || [];
-  const days: ForecastDay[] = dailyData.map(d => {
-    const date = new Date(d.time * 1000).toISOString().split('T')[0];
-    const tempHigh: number | null = d.temperatureHigh ?? d.temperatureMax ?? null;
-    const tempLow: number | null = d.temperatureLow ?? d.temperatureMin ?? null;
-
-    const { rating, score } = (tempHigh !== null && tempLow !== null)
-      ? scoreDay(tempLow, tempHigh)
-      : { rating: 'unknown' as Rating, score: 0 };
-
-    return {
-      date,
-      tempHigh,
-      tempLow,
-      summary: d.summary ?? '',
-      icon: d.icon ?? '',
-      rating,
-      score,
-    };
-  });
+  const { current, days, source } = weatherData;
 
   // Find best tapping window and generate recommendation
   const bestWindow = findBestWindow(days);
@@ -135,6 +245,7 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     recommendation,
     seasonInfo,
     cached: false,
+    source,
   };
 
   // Store in KV cache
@@ -1296,7 +1407,7 @@ ${phSnippet}
           — making sense of maple syrup
         </li>
       </ul>
-      <p class="footer-note">
+      <p class="footer-note" id="weather-source-attr">
         Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>.
       </p>
       <p class="footer-note">
@@ -1355,6 +1466,16 @@ ${phSnippet}
   function render() {
     if (!forecastData) return;
     const d = forecastData;
+
+    // Weather source attribution
+    var srcEl = document.getElementById('weather-source-attr');
+    if (srcEl) {
+      if (d.source === 'open_meteo') {
+        srcEl.innerHTML = 'Weather data provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.';
+      } else {
+        srcEl.innerHTML = 'Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>.';
+      }
+    }
 
     // Current conditions (in header)
     document.getElementById('current-temp').textContent = tempStr(d.current.temperature);
