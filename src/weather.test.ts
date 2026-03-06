@@ -108,4 +108,31 @@ describe('ensembleDaily', () => {
     ];
     expect(ensembleDaily([source])).toEqual(source);
   });
+
+  it('averages tempHigh and tempLow across two sources for matching dates', () => {
+    const s1 = [
+      { date: '2026-03-06', tempHigh: 8.0, tempLow: -4.0 },
+      { date: '2026-03-07', tempHigh: 6.0, tempLow: -6.0 },
+    ];
+    const s2 = [
+      { date: '2026-03-06', tempHigh: 10.0, tempLow: -2.0 },
+      { date: '2026-03-07', tempHigh: 8.0,  tempLow: -4.0 },
+    ];
+    expect(ensembleDaily([s1, s2])).toEqual([
+      { date: '2026-03-06', tempHigh: 9.0, tempLow: -3.0 },
+      { date: '2026-03-07', tempHigh: 7.0, tempLow: -5.0 },
+    ]);
+  });
+
+  it('averages across four sources for matching dates', () => {
+    const sources = [
+      [{ date: '2026-03-06', tempHigh: 8.0, tempLow: -4.0 }],
+      [{ date: '2026-03-06', tempHigh: 10.0, tempLow: -2.0 }],
+      [{ date: '2026-03-06', tempHigh: 6.0,  tempLow: -6.0 }],
+      [{ date: '2026-03-06', tempHigh: 8.0,  tempLow: -4.0 }],
+    ];
+    expect(ensembleDaily(sources)).toEqual([
+      { date: '2026-03-06', tempHigh: 8.0, tempLow: -4.0 },
+    ]);
+  });
 });
