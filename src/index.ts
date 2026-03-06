@@ -118,10 +118,10 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
 
   // Parse each successful source into named DailyTemp arrays then ensemble
   const namedSources: { name: string; days: DailyTemp[] }[] = [];
-  if (pwJson) namedSources.push({ name: 'Pirate Weather', days: parsePirateWeatherDaily(pwJson) });
-  if (ecmwfResult.status === 'fulfilled') namedSources.push({ name: 'ECMWF', days: parseOpenMeteoDaily(ecmwfResult.value) });
-  if (gemResult.status === 'fulfilled') namedSources.push({ name: 'GEM', days: parseOpenMeteoDaily(gemResult.value) });
-  if (gfsResult.status === 'fulfilled') namedSources.push({ name: 'GFS', days: parseOpenMeteoDaily(gfsResult.value) });
+  if (pwJson) namedSources.push({ name: 'Pirate Weather (US)', days: parsePirateWeatherDaily(pwJson) });
+  if (ecmwfResult.status === 'fulfilled') namedSources.push({ name: 'ECMWF (EU)', days: parseOpenMeteoDaily(ecmwfResult.value) });
+  if (gemResult.status === 'fulfilled') namedSources.push({ name: 'GEM (Canada)', days: parseOpenMeteoDaily(gemResult.value) });
+  if (gfsResult.status === 'fulfilled') namedSources.push({ name: 'GFS (US)', days: parseOpenMeteoDaily(gfsResult.value) });
 
   if (namedSources.length === 0) {
     return Response.json({ error: 'Failed to reach any weather API' }, { status: 502 });
@@ -1391,7 +1391,7 @@ ${phSnippet}
       </ul>
       <p class="footer-note">
         Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>
-        and <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (ECMWF, GEM, GFS models).
+        and <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (ECMWF/EU, GEM/Canada, GFS/US models).
       </p>
       <p class="footer-note">
         Built with care for 3 out of 52 weeks per year by <a href="https://grantlucas.com/" target="_blank" rel="noopener">Grant Lucas</a>.
