@@ -135,4 +135,29 @@ describe('ensembleDaily', () => {
       { date: '2026-03-06', tempHigh: 8.0, tempLow: -4.0 },
     ]);
   });
+
+  it('includes dates present in only some sources (union), using available data for that date', () => {
+    // source1 has Mar 6 + Mar 7, source2 only has Mar 6
+    const s1 = [
+      { date: '2026-03-06', tempHigh: 8.0,  tempLow: -4.0 },
+      { date: '2026-03-07', tempHigh: 6.0,  tempLow: -6.0 },
+    ];
+    const s2 = [
+      { date: '2026-03-06', tempHigh: 10.0, tempLow: -2.0 },
+    ];
+    const result = ensembleDaily([s1, s2]);
+    expect(result).toHaveLength(2);
+    // Mar 6: averaged from both sources
+    expect(result[0]).toEqual({ date: '2026-03-06', tempHigh: 9.0, tempLow: -3.0 });
+    // Mar 7: only from s1, so passthrough
+    expect(result[1]).toEqual({ date: '2026-03-07', tempHigh: 6.0, tempLow: -6.0 });
+  });
+
+  it('returns dates in ascending chronological order', () => {
+    // Deliberately provide out-of-order sources
+    const s1 = [{ date: '2026-03-08', tempHigh: 5.0, tempLow: -3.0 }];
+    const s2 = [{ date: '2026-03-06', tempHigh: 8.0, tempLow: -4.0 }];
+    const result = ensembleDaily([s1, s2]);
+    expect(result.map(d => d.date)).toEqual(['2026-03-06', '2026-03-08']);
+  });
 });
