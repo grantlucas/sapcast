@@ -637,14 +637,6 @@ ${phSnippet}
   .source-row .source-temps .temp-arrow { margin: 0 4px; }
   .source-row .source-temps .temp-high { min-width: 36px; }
 
-  .forecast-day .expand-hint {
-    font-size: 0.7rem;
-    color: #a89a8e;
-    margin-left: 6px;
-    transition: transform 0.15s;
-  }
-
-  .forecast-day .expand-hint.open { transform: rotate(90deg); }
 
   .how-it-works {
     margin-bottom: 12px;
@@ -1495,7 +1487,7 @@ ${phSnippet}
       const row = document.createElement('div');
       row.className = 'forecast-day ' + day.rating;
       row.innerHTML =
-        '<span class="day-name">' + dayName(day.date) + '<span class="expand-hint">\u25B6</span></span>' +
+        '<span class="day-name">' + dayName(day.date) + '</span>' +
         '<span class="temps"><span class="temp-low">' + tempStr(day.tempLow) + '</span><span class="temp-arrow">\u2192</span><span class="temp-high">' + tempStr(day.tempHigh) + '</span></span>' +
         '<span class="day-rating ' + day.rating + '">' + ratingLabel(day.rating) + '</span>';
 
@@ -1518,8 +1510,7 @@ ${phSnippet}
       detail.innerHTML = detailHTML;
 
       row.addEventListener('click', function() {
-        var isOpen = detail.classList.toggle('open');
-        row.querySelector('.expand-hint').classList.toggle('open', isOpen);
+        detail.classList.toggle('open');
       });
 
       wrapper.appendChild(row);
