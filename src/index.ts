@@ -28,10 +28,16 @@ interface CurrentConditions {
   icon: string;
 }
 
+interface SourceDay {
+  tempHigh: number;
+  tempLow: number;
+}
+
 interface ForecastResult {
   current: CurrentConditions;
   today: ForecastDay | null;
   days: ForecastDay[];
+  sources: Record<string, Record<string, SourceDay>>; // sourceName -> date -> temps
   bestWindow: {
     startDate: string;
     endDate: string;
@@ -110,18 +116,28 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     icon: currently.icon ?? '',
   };
 
-  // Parse each successful source into DailyTemp arrays then ensemble
-  const sources: DailyTemp[] [] = [];
-  if (pwJson) sources.push(parsePirateWeatherDaily(pwJson));
-  if (ecmwfResult.status === 'fulfilled') sources.push(parseOpenMeteoDaily(ecmwfResult.value));
-  if (gemResult.status === 'fulfilled') sources.push(parseOpenMeteoDaily(gemResult.value));
-  if (gfsResult.status === 'fulfilled') sources.push(parseOpenMeteoDaily(gfsResult.value));
+  // Parse each successful source into named DailyTemp arrays then ensemble
+  const namedSources: { name: string; days: DailyTemp[] }[] = [];
+  if (pwJson) namedSources.push({ name: 'Pirate Weather', days: parsePirateWeatherDaily(pwJson) });
+  if (ecmwfResult.status === 'fulfilled') namedSources.push({ name: 'ECMWF', days: parseOpenMeteoDaily(ecmwfResult.value) });
+  if (gemResult.status === 'fulfilled') namedSources.push({ name: 'GEM', days: parseOpenMeteoDaily(gemResult.value) });
+  if (gfsResult.status === 'fulfilled') namedSources.push({ name: 'GFS', days: parseOpenMeteoDaily(gfsResult.value) });
 
-  if (sources.length === 0) {
+  if (namedSources.length === 0) {
     return Response.json({ error: 'Failed to reach any weather API' }, { status: 502 });
   }
 
-  const ensembled = ensembleDaily(sources);
+  const ensembled = ensembleDaily(namedSources.map(s => s.days));
+
+  // Build per-source lookup: sourceName -> date -> { tempHigh, tempLow }
+  const sourcesMap: Record<string, Record<string, SourceDay>> = {};
+  for (const { name, days: sDays } of namedSources) {
+    const byDate: Record<string, SourceDay> = {};
+    for (const d of sDays) {
+      byDate[d.date] = { tempHigh: d.tempHigh, tempLow: d.tempLow };
+    }
+    sourcesMap[name] = byDate;
+  }
 
   // Summary and icon come from Pirate Weather; other sources don't provide them
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -149,6 +165,7 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     current,
     today: days[0] || null,
     days,
+    sources: sourcesMap,
     bestWindow: bestWindow ? {
       startDate: bestWindow.start,
       endDate: bestWindow.end,
@@ -578,6 +595,57 @@ ${phSnippet}
   .day-rating.fair { color: #c24726; }
   .day-rating.poor { color: #6b7a82; }
 
+  .forecast-day-wrapper {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .forecast-day { cursor: pointer; user-select: none; }
+
+  .source-detail {
+    display: none;
+    padding: 4px 12px 8px 18px;
+    background: #f4f1ed;
+    border-radius: 0 0 8px 8px;
+    margin-top: -4px;
+    font-size: 0.78rem;
+    color: #6d6157;
+  }
+
+  .source-detail.open { display: block; }
+
+  .source-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 0;
+  }
+
+  .source-row .source-name {
+    min-width: 110px;
+    font-weight: 500;
+    color: #5C3D2E;
+  }
+
+  .source-row .source-temps {
+    min-width: 120px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .source-row .source-temps .temp-low { text-align: right; min-width: 36px; }
+  .source-row .source-temps .temp-arrow { margin: 0 4px; }
+  .source-row .source-temps .temp-high { min-width: 36px; }
+
+  .forecast-day .expand-hint {
+    font-size: 0.7rem;
+    color: #a89a8e;
+    margin-left: 6px;
+    transition: transform 0.15s;
+  }
+
+  .forecast-day .expand-hint.open { transform: rotate(90deg); }
+
   .how-it-works {
     margin-bottom: 12px;
   }
@@ -803,7 +871,7 @@ ${phSnippet}
   /* Forecast row hover */
   .forecast-day {
     transition: transform 0.15s, background 0.15s, box-shadow 0.15s;
-    cursor: default;
+    cursor: pointer;
   }
 
   .forecast-day:hover {
@@ -891,6 +959,9 @@ ${phSnippet}
   @media (max-width: 680px) {
     .forecast-day { flex-wrap: wrap; gap: 4px; }
     .forecast-day .temps { min-width: auto; }
+    .source-row { flex-wrap: wrap; gap: 2px; }
+    .source-row .source-name { min-width: auto; }
+    .source-row .source-temps { min-width: auto; }
     .container { padding: 16px 12px; }
   }
 
@@ -1418,13 +1489,42 @@ ${phSnippet}
     const listEl = document.getElementById('forecast-list');
     listEl.innerHTML = '';
     d.days.forEach(function(day) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'forecast-day-wrapper';
+
       const row = document.createElement('div');
       row.className = 'forecast-day ' + day.rating;
       row.innerHTML =
-        '<span class="day-name">' + dayName(day.date) + '</span>' +
+        '<span class="day-name">' + dayName(day.date) + '<span class="expand-hint">\u25B6</span></span>' +
         '<span class="temps"><span class="temp-low">' + tempStr(day.tempLow) + '</span><span class="temp-arrow">\u2192</span><span class="temp-high">' + tempStr(day.tempHigh) + '</span></span>' +
         '<span class="day-rating ' + day.rating + '">' + ratingLabel(day.rating) + '</span>';
-      listEl.appendChild(row);
+
+      // Build source detail panel
+      var detailHTML = '';
+      var sourceNames = d.sources ? Object.keys(d.sources) : [];
+      sourceNames.forEach(function(name) {
+        var sd = d.sources[name][day.date];
+        if (sd) {
+          detailHTML +=
+            '<div class="source-row">' +
+            '<span class="source-name">' + name + '</span>' +
+            '<span class="source-temps"><span class="temp-low">' + tempStr(sd.tempLow) + '</span><span class="temp-arrow">\u2192</span><span class="temp-high">' + tempStr(sd.tempHigh) + '</span></span>' +
+            '</div>';
+        }
+      });
+
+      var detail = document.createElement('div');
+      detail.className = 'source-detail';
+      detail.innerHTML = detailHTML;
+
+      row.addEventListener('click', function() {
+        var isOpen = detail.classList.toggle('open');
+        row.querySelector('.expand-hint').classList.toggle('open', isOpen);
+      });
+
+      wrapper.appendChild(row);
+      wrapper.appendChild(detail);
+      listEl.appendChild(wrapper);
     });
   }
 
