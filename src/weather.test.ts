@@ -19,4 +19,17 @@ describe('parseOpenMeteoDaily', () => {
       { date: '2026-03-07', tempHigh: 6.2, tempLow: -5.4 },
     ]);
   });
+
+  it('skips days where temperature values are null', () => {
+    const json = {
+      daily: {
+        time: ['2026-03-06', '2026-03-07', '2026-03-08'],
+        temperature_2m_max: [8.5, null, 5.0],
+        temperature_2m_min: [-3.1, -5.4, null],
+      },
+    };
+    expect(parseOpenMeteoDaily(json)).toEqual([
+      { date: '2026-03-06', tempHigh: 8.5, tempLow: -3.1 },
+    ]);
+  });
 });
