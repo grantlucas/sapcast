@@ -1,5 +1,5 @@
 // Sapcast — Cloudflare Worker
-// Serves the frontend and proxies/caches Pirate Weather API requests
+// Serves the frontend and proxies/caches weather API requests
 
 import {
   scoreDay,
@@ -7,9 +7,14 @@ import {
   generateRecommendation,
   getSeasonInfo,
   type ForecastDay,
-  type Rating,
   type SeasonInfo,
 } from './scoring';
+import {
+  parsePirateWeatherDaily,
+  parseOpenMeteoDaily,
+  ensembleDaily,
+  type DailyTemp,
+} from './weather';
 
 interface Env {
   FORECAST_CACHE: KVNamespace;
@@ -23,10 +28,16 @@ interface CurrentConditions {
   icon: string;
 }
 
+interface SourceDay {
+  tempHigh: number;
+  tempLow: number;
+}
+
 interface ForecastResult {
   current: CurrentConditions;
   today: ForecastDay | null;
   days: ForecastDay[];
+  sources: Record<string, Record<string, SourceDay>>; // sourceName -> date -> temps
   bestWindow: {
     startDate: string;
     endDate: string;
@@ -40,6 +51,24 @@ interface ForecastResult {
 
 const CACHE_TTL = 10800; // 3 hours in seconds
 const GEOCODE_CACHE_TTL = 2592000; // 30 days — postal code coords don't change
+
+// ── Weather source fetchers ────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchPirateWeatherJson(apiKey: string, lat: number, lon: number): Promise<any> {
+  const url = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Pirate Weather ${resp.status}`);
+  return resp.json();
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchOpenMeteoJson(model: string, lat: number, lon: number): Promise<any> {
+  const url = `https://api.open-meteo.com/v1/${model}?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min&forecast_days=7&timezone=auto`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Open-Meteo/${model} ${resp.status}`);
+  return resp.json();
+}
 
 // ── API handler ────────────────────────────────────────────────────────────
 
@@ -65,56 +94,66 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Fetch from Pirate Weather
   const apiKey = env.PIRATE_WEATHER_API_KEY;
   if (!apiKey) {
     return Response.json({ error: 'API key not configured' }, { status: 500 });
   }
 
-  const apiUrl = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
-  let apiResponse: Response;
-  try {
-    apiResponse = await fetch(apiUrl);
-  } catch {
-    return Response.json({ error: 'Failed to reach weather API' }, { status: 502 });
-  }
+  // Fetch all weather sources in parallel; individual failures are non-fatal
+  const [pwResult, ecmwfResult, gemResult, gfsResult] = await Promise.allSettled([
+    fetchPirateWeatherJson(apiKey, lat, lon),
+    fetchOpenMeteoJson('ecmwf', lat, lon),
+    fetchOpenMeteoJson('gem', lat, lon),
+    fetchOpenMeteoJson('gfs', lat, lon),
+  ]);
 
-  if (!apiResponse.ok) {
-    return Response.json({ error: `Weather API returned ${apiResponse.status}` }, { status: 502 });
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const weather: any = await apiResponse.json();
-
-  // Process current conditions
-  const currently = weather.currently || {};
+  // Current conditions come from Pirate Weather (only source that provides them)
+  const pwJson = pwResult.status === 'fulfilled' ? pwResult.value : null;
+  const currently = pwJson?.currently ?? {};
   const current: CurrentConditions = {
     temperature: currently.temperature ?? null,
     summary: currently.summary ?? '',
     icon: currently.icon ?? '',
   };
 
-  // Process daily forecast
+  // Parse each successful source into named DailyTemp arrays then ensemble
+  const namedSources: { name: string; days: DailyTemp[] }[] = [];
+  if (pwJson) namedSources.push({ name: 'Pirate Weather (US)', days: parsePirateWeatherDaily(pwJson) });
+  if (ecmwfResult.status === 'fulfilled') namedSources.push({ name: 'ECMWF (EU)', days: parseOpenMeteoDaily(ecmwfResult.value) });
+  if (gemResult.status === 'fulfilled') namedSources.push({ name: 'GEM (Canada)', days: parseOpenMeteoDaily(gemResult.value) });
+  if (gfsResult.status === 'fulfilled') namedSources.push({ name: 'GFS (US)', days: parseOpenMeteoDaily(gfsResult.value) });
+
+  if (namedSources.length === 0) {
+    return Response.json({ error: 'Failed to reach any weather API' }, { status: 502 });
+  }
+
+  const ensembled = ensembleDaily(namedSources.map(s => s.days));
+
+  // Build per-source lookup: sourceName -> date -> { tempHigh, tempLow }
+  const sourcesMap: Record<string, Record<string, SourceDay>> = {};
+  for (const { name, days: sDays } of namedSources) {
+    const byDate: Record<string, SourceDay> = {};
+    for (const d of sDays) {
+      byDate[d.date] = { tempHigh: d.tempHigh, tempLow: d.tempLow };
+    }
+    sourcesMap[name] = byDate;
+  }
+
+  // Summary and icon come from Pirate Weather; other sources don't provide them
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dailyData: any[] = weather.daily?.data || [];
-  const days: ForecastDay[] = dailyData.map(d => {
-    const date = new Date(d.time * 1000).toISOString().split('T')[0];
-    const tempHigh: number | null = d.temperatureHigh ?? d.temperatureMax ?? null;
-    const tempLow: number | null = d.temperatureLow ?? d.temperatureMin ?? null;
+  const pwByDate = new Map<string, { summary: string; icon: string }>();
+  if (pwJson) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const d of (pwJson.daily?.data ?? []) as any[]) {
+      const date = new Date(d.time * 1000).toISOString().split('T')[0];
+      pwByDate.set(date, { summary: d.summary ?? '', icon: d.icon ?? '' });
+    }
+  }
 
-    const { rating, score } = (tempHigh !== null && tempLow !== null)
-      ? scoreDay(tempLow, tempHigh)
-      : { rating: 'unknown' as Rating, score: 0 };
-
-    return {
-      date,
-      tempHigh,
-      tempLow,
-      summary: d.summary ?? '',
-      icon: d.icon ?? '',
-      rating,
-      score,
-    };
+  const days: ForecastDay[] = ensembled.map(({ date, tempHigh, tempLow }) => {
+    const { rating, score } = scoreDay(tempLow, tempHigh);
+    const { summary, icon } = pwByDate.get(date) ?? { summary: '', icon: '' };
+    return { date, tempHigh, tempLow, summary, icon, rating, score };
   });
 
   // Find best tapping window and generate recommendation
@@ -126,6 +165,7 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     current,
     today: days[0] || null,
     days,
+    sources: sourcesMap,
     bestWindow: bestWindow ? {
       startDate: bestWindow.start,
       endDate: bestWindow.end,
@@ -494,6 +534,12 @@ ${phSnippet}
     margin-bottom: 12px;
   }
 
+  .forecast-subtitle {
+    font-size: 0.78rem;
+    color: #a89a8e;
+    margin: -2px 0 8px;
+  }
+
   .forecast-list {
     display: flex;
     flex-direction: column;
@@ -554,6 +600,49 @@ ${phSnippet}
   .day-rating.good { color: #008380; }
   .day-rating.fair { color: #c24726; }
   .day-rating.poor { color: #6b7a82; }
+
+  .forecast-day-wrapper {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .forecast-day { cursor: pointer; user-select: none; }
+
+  .source-detail {
+    display: none;
+    padding: 4px 12px 8px 18px;
+    background: #f4f1ed;
+    border-radius: 0 0 8px 8px;
+    margin-top: -4px;
+    font-size: 0.78rem;
+    color: #6d6157;
+  }
+
+  .source-detail.open { display: block; }
+
+  .source-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 0;
+  }
+
+  .source-row .source-name {
+    min-width: 110px;
+    font-weight: 500;
+    color: #5C3D2E;
+  }
+
+  .source-row .source-temps {
+    min-width: 120px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .source-row .source-temps .temp-low { text-align: right; min-width: 36px; }
+  .source-row .source-temps .temp-arrow { margin: 0 4px; }
+  .source-row .source-temps .temp-high { min-width: 36px; }
+
 
   .how-it-works {
     margin-bottom: 12px;
@@ -780,7 +869,7 @@ ${phSnippet}
   /* Forecast row hover */
   .forecast-day {
     transition: transform 0.15s, background 0.15s, box-shadow 0.15s;
-    cursor: default;
+    cursor: pointer;
   }
 
   .forecast-day:hover {
@@ -868,6 +957,9 @@ ${phSnippet}
   @media (max-width: 680px) {
     .forecast-day { flex-wrap: wrap; gap: 4px; }
     .forecast-day .temps { min-width: auto; }
+    .source-row { flex-wrap: wrap; gap: 2px; }
+    .source-row .source-name { min-width: auto; }
+    .source-row .source-temps { min-width: auto; }
     .container { padding: 16px 12px; }
   }
 
@@ -1175,6 +1267,7 @@ ${phSnippet}
 
         <div class="card forecast-card">
           <h2>7-Day Forecast</h2>
+          <p class="forecast-subtitle">Aggregated from multiple weather models. Tap any day to see per-source details.</p>
           <div class="forecast-list" id="forecast-list"></div>
         </div>
       </div>
@@ -1297,7 +1390,8 @@ ${phSnippet}
         </li>
       </ul>
       <p class="footer-note">
-        Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>.
+        Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>
+        and <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (ECMWF/EU, GEM/Canada, GFS/US models).
       </p>
       <p class="footer-note">
         Built with care for 3 out of 52 weeks per year by <a href="https://grantlucas.com/" target="_blank" rel="noopener">Grant Lucas</a>.
@@ -1394,13 +1488,41 @@ ${phSnippet}
     const listEl = document.getElementById('forecast-list');
     listEl.innerHTML = '';
     d.days.forEach(function(day) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'forecast-day-wrapper';
+
       const row = document.createElement('div');
       row.className = 'forecast-day ' + day.rating;
       row.innerHTML =
         '<span class="day-name">' + dayName(day.date) + '</span>' +
         '<span class="temps"><span class="temp-low">' + tempStr(day.tempLow) + '</span><span class="temp-arrow">\u2192</span><span class="temp-high">' + tempStr(day.tempHigh) + '</span></span>' +
         '<span class="day-rating ' + day.rating + '">' + ratingLabel(day.rating) + '</span>';
-      listEl.appendChild(row);
+
+      // Build source detail panel
+      var detailHTML = '';
+      var sourceNames = d.sources ? Object.keys(d.sources) : [];
+      sourceNames.forEach(function(name) {
+        var sd = d.sources[name][day.date];
+        if (sd) {
+          detailHTML +=
+            '<div class="source-row">' +
+            '<span class="source-name">' + name + '</span>' +
+            '<span class="source-temps"><span class="temp-low">' + tempStr(sd.tempLow) + '</span><span class="temp-arrow">\u2192</span><span class="temp-high">' + tempStr(sd.tempHigh) + '</span></span>' +
+            '</div>';
+        }
+      });
+
+      var detail = document.createElement('div');
+      detail.className = 'source-detail';
+      detail.innerHTML = detailHTML;
+
+      row.addEventListener('click', function() {
+        detail.classList.toggle('open');
+      });
+
+      wrapper.appendChild(row);
+      wrapper.appendChild(detail);
+      listEl.appendChild(wrapper);
     });
   }
 
