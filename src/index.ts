@@ -534,6 +534,12 @@ ${phSnippet}
     margin-bottom: 12px;
   }
 
+  .forecast-subtitle {
+    font-size: 0.78rem;
+    color: #a89a8e;
+    margin: -2px 0 8px;
+  }
+
   .forecast-list {
     display: flex;
     flex-direction: column;
@@ -1261,6 +1267,7 @@ ${phSnippet}
 
         <div class="card forecast-card">
           <h2>7-Day Forecast</h2>
+          <p class="forecast-subtitle">Aggregated from multiple weather models. Tap any day to see per-source details.</p>
           <div class="forecast-list" id="forecast-list"></div>
         </div>
       </div>
