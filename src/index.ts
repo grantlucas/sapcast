@@ -1,5 +1,5 @@
 // Sapcast — Cloudflare Worker
-// Serves the frontend and proxies/caches Pirate Weather API requests
+// Serves the frontend and proxies/caches weather API requests
 
 import {
   scoreDay,
@@ -7,9 +7,14 @@ import {
   generateRecommendation,
   getSeasonInfo,
   type ForecastDay,
-  type Rating,
   type SeasonInfo,
 } from './scoring';
+import {
+  parsePirateWeatherDaily,
+  parseOpenMeteoDaily,
+  ensembleDaily,
+  type DailyTemp,
+} from './weather';
 
 interface Env {
   FORECAST_CACHE: KVNamespace;
@@ -41,6 +46,24 @@ interface ForecastResult {
 const CACHE_TTL = 10800; // 3 hours in seconds
 const GEOCODE_CACHE_TTL = 2592000; // 30 days — postal code coords don't change
 
+// ── Weather source fetchers ────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchPirateWeatherJson(apiKey: string, lat: number, lon: number): Promise<any> {
+  const url = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Pirate Weather ${resp.status}`);
+  return resp.json();
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchOpenMeteoJson(model: string, lat: number, lon: number): Promise<any> {
+  const url = `https://api.open-meteo.com/v1/${model}?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min&forecast_days=7&timezone=auto`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Open-Meteo/${model} ${resp.status}`);
+  return resp.json();
+}
+
 // ── API handler ────────────────────────────────────────────────────────────
 
 async function handleForecast(request: Request, env: Env): Promise<Response> {
@@ -65,56 +88,56 @@ async function handleForecast(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Fetch from Pirate Weather
   const apiKey = env.PIRATE_WEATHER_API_KEY;
   if (!apiKey) {
     return Response.json({ error: 'API key not configured' }, { status: 500 });
   }
 
-  const apiUrl = `https://api.pirateweather.net/forecast/${apiKey}/${lat},${lon}?units=si&extend=hourly`;
-  let apiResponse: Response;
-  try {
-    apiResponse = await fetch(apiUrl);
-  } catch {
-    return Response.json({ error: 'Failed to reach weather API' }, { status: 502 });
-  }
+  // Fetch all weather sources in parallel; individual failures are non-fatal
+  const [pwResult, ecmwfResult, gemResult, gfsResult] = await Promise.allSettled([
+    fetchPirateWeatherJson(apiKey, lat, lon),
+    fetchOpenMeteoJson('ecmwf', lat, lon),
+    fetchOpenMeteoJson('gem', lat, lon),
+    fetchOpenMeteoJson('gfs', lat, lon),
+  ]);
 
-  if (!apiResponse.ok) {
-    return Response.json({ error: `Weather API returned ${apiResponse.status}` }, { status: 502 });
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const weather: any = await apiResponse.json();
-
-  // Process current conditions
-  const currently = weather.currently || {};
+  // Current conditions come from Pirate Weather (only source that provides them)
+  const pwJson = pwResult.status === 'fulfilled' ? pwResult.value : null;
+  const currently = pwJson?.currently ?? {};
   const current: CurrentConditions = {
     temperature: currently.temperature ?? null,
     summary: currently.summary ?? '',
     icon: currently.icon ?? '',
   };
 
-  // Process daily forecast
+  // Parse each successful source into DailyTemp arrays then ensemble
+  const sources: DailyTemp[] [] = [];
+  if (pwJson) sources.push(parsePirateWeatherDaily(pwJson));
+  if (ecmwfResult.status === 'fulfilled') sources.push(parseOpenMeteoDaily(ecmwfResult.value));
+  if (gemResult.status === 'fulfilled') sources.push(parseOpenMeteoDaily(gemResult.value));
+  if (gfsResult.status === 'fulfilled') sources.push(parseOpenMeteoDaily(gfsResult.value));
+
+  if (sources.length === 0) {
+    return Response.json({ error: 'Failed to reach any weather API' }, { status: 502 });
+  }
+
+  const ensembled = ensembleDaily(sources);
+
+  // Summary and icon come from Pirate Weather; other sources don't provide them
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dailyData: any[] = weather.daily?.data || [];
-  const days: ForecastDay[] = dailyData.map(d => {
-    const date = new Date(d.time * 1000).toISOString().split('T')[0];
-    const tempHigh: number | null = d.temperatureHigh ?? d.temperatureMax ?? null;
-    const tempLow: number | null = d.temperatureLow ?? d.temperatureMin ?? null;
+  const pwByDate = new Map<string, { summary: string; icon: string }>();
+  if (pwJson) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const d of (pwJson.daily?.data ?? []) as any[]) {
+      const date = new Date(d.time * 1000).toISOString().split('T')[0];
+      pwByDate.set(date, { summary: d.summary ?? '', icon: d.icon ?? '' });
+    }
+  }
 
-    const { rating, score } = (tempHigh !== null && tempLow !== null)
-      ? scoreDay(tempLow, tempHigh)
-      : { rating: 'unknown' as Rating, score: 0 };
-
-    return {
-      date,
-      tempHigh,
-      tempLow,
-      summary: d.summary ?? '',
-      icon: d.icon ?? '',
-      rating,
-      score,
-    };
+  const days: ForecastDay[] = ensembled.map(({ date, tempHigh, tempLow }) => {
+    const { rating, score } = scoreDay(tempLow, tempHigh);
+    const { summary, icon } = pwByDate.get(date) ?? { summary: '', icon: '' };
+    return { date, tempHigh, tempLow, summary, icon, rating, score };
   });
 
   // Find best tapping window and generate recommendation
