@@ -2,7 +2,7 @@
 
 Based on local weather forecasts; when should I tap my maple tree?
 
-A simple web app that uses browser geolocation and the [Pirate Weather](https://pirateweather.net/) API to determine the optimal time to tap sugar maple trees for sap collection.
+A simple web app that uses browser geolocation and an ensemble of weather forecasts to determine the optimal time to tap sugar maple trees for sap collection.
 
 ## How it works
 
@@ -43,7 +43,7 @@ npm run deploy
 ## Tech stack
 
 - Cloudflare Workers (single file, no build step)
-- Pirate Weather API (Dark Sky compatible, free tier)
+- Ensemble weather forecasts (Pirate Weather + Open-Meteo ECMWF/GEM/GFS)
 - Cloudflare KV (forecast caching, 3h TTL)
 - Vanilla HTML/CSS/JS frontend
 
@@ -83,5 +83,16 @@ flow research:
 
 ### Weather data
 
-- [Pirate Weather](https://pirateweather.net/) — free, Dark
-  Sky-compatible forecast API
+Forecasts are ensembled (averaged) from four sources to improve
+accuracy. Each day's high/low is the mean across all available models.
+Click any day in the forecast to see per-source values.
+
+- [Pirate Weather](https://pirateweather.net/) (US) — free, Dark
+  Sky-compatible forecast API; also provides current conditions,
+  summaries, and icons
+- [Open-Meteo ECMWF](https://open-meteo.com/) (EU) — European Centre
+  for Medium-Range Weather Forecasts model
+- [Open-Meteo GEM](https://open-meteo.com/) (Canada) — Environment
+  Canada's Global Environmental Multiscale model
+- [Open-Meteo GFS](https://open-meteo.com/) (US) — NOAA's Global
+  Forecast System model
