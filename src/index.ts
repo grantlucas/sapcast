@@ -1320,7 +1320,8 @@ ${phSnippet}
         </li>
       </ul>
       <p class="footer-note">
-        Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>.
+        Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>
+        and <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (ECMWF, GEM, GFS models).
       </p>
       <p class="footer-note">
         Built with care for 3 out of 52 weeks per year by <a href="https://grantlucas.com/" target="_blank" rel="noopener">Grant Lucas</a>.
