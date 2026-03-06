@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseOpenMeteoDaily, parsePirateWeatherDaily, ensembleDaily, type DailyTemp } from './weather';
+import { parseOpenMeteoDaily, parsePirateWeatherDaily, ensembleDaily } from './weather';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -89,5 +89,23 @@ describe('parseOpenMeteoDaily', () => {
     expect(parseOpenMeteoDaily(json)).toEqual([
       { date: '2026-03-06', tempHigh: 8.5, tempLow: -3.1 },
     ]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ensembleDaily
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('ensembleDaily', () => {
+  it('returns empty array for empty sources', () => {
+    expect(ensembleDaily([])).toEqual([]);
+  });
+
+  it('returns the single source unchanged', () => {
+    const source = [
+      { date: '2026-03-06', tempHigh: 8.5, tempLow: -3.1 },
+      { date: '2026-03-07', tempHigh: 6.2, tempLow: -5.4 },
+    ];
+    expect(ensembleDaily([source])).toEqual(source);
   });
 });
