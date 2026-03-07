@@ -450,6 +450,28 @@ ${phSnippet}
     text-align: center;
   }
 
+  .override-divider {
+    margin-top: 10px;
+    font-size: 0.78rem;
+    color: #8a7b6e;
+  }
+
+  .use-gps-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    color: #6d6157;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .use-gps-btn:hover {
+    color: #5C3D2E;
+  }
+
   .map-container {
     border-radius: 10px;
     overflow: hidden;
@@ -1228,6 +1250,7 @@ ${phSnippet}
         <input type="text" id="postal-code-override" placeholder="e.g. 05602 or K1A" aria-label="ZIP or postal code" autocomplete="postal-code">
         <button onclick="lookupOverrideLocation()">Go</button>
       </div>
+      <div class="override-divider">or <button class="use-gps-btn" onclick="useCurrentLocation()">use my current location</button></div>
     </div>
   </header>
 
@@ -1716,6 +1739,15 @@ ${phSnippet}
     if (!visible) {
       document.getElementById('postal-code-override').focus();
     }
+  };
+
+  window.useCurrentLocation = function() {
+    document.getElementById('location-override').style.display = 'none';
+    document.getElementById('forecast-results').style.display = 'none';
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').querySelector('p').textContent = 'Detecting your location...';
+    clearLocationTimer();
+    getLocation();
   };
 
   window.lookupOverrideLocation = function() {
