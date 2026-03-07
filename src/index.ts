@@ -1186,7 +1186,7 @@ ${phSnippet}
     border: 1.5px solid #c2b8a3;
     border-radius: 8px;
     font-family: inherit;
-    font-size: 0.92rem;
+    font-size: 16px;
     width: 120px;
     background: #fff;
     color: #3e2f23;
@@ -1759,6 +1759,7 @@ ${phSnippet}
       codeEl.focus();
       return;
     }
+    codeEl.blur();
     var errEl = document.getElementById('override-error');
     errEl.style.display = 'none';
     var country = /^[A-Za-z]/.test(code) ? 'ca' : 'us';
@@ -1793,6 +1794,7 @@ ${phSnippet}
       codeEl.focus();
       return;
     }
+    codeEl.blur();
 
     // Auto-detect: Canadian postal codes start with a letter, US ZIPs start with a digit
     var country = /^[A-Za-z]/.test(code) ? 'ca' : 'us';
