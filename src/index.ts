@@ -472,6 +472,12 @@ ${phSnippet}
     color: #5C3D2E;
   }
 
+  .override-error {
+    margin-top: 6px;
+    font-size: 0.78rem;
+    color: #d63031;
+  }
+
   .map-container {
     border-radius: 10px;
     overflow: hidden;
@@ -1251,6 +1257,7 @@ ${phSnippet}
         <button onclick="lookupOverrideLocation()">Go</button>
       </div>
       <div class="override-divider">or <button class="use-gps-btn" onclick="useCurrentLocation()">use my current location</button></div>
+      <p class="override-error" id="override-error" style="display:none;"></p>
     </div>
   </header>
 
@@ -1279,13 +1286,6 @@ ${phSnippet}
           <strong>Having trouble enabling location?</strong>
           <span id="permission-hint-detail"></span>
         </div>
-        <div class="postal-fallback">
-          <div class="postal-divider">or enter a ZIP / postal code</div>
-          <div class="postal-form">
-            <input type="text" id="postal-code" placeholder="e.g. 05602 or K1A" aria-label="ZIP or postal code" autocomplete="postal-code">
-            <button onclick="lookupPostalCode()">Go</button>
-          </div>
-        </div>
       </div>
 
       <div class="error-state" id="error" style="display:none;">
@@ -1294,8 +1294,8 @@ ${phSnippet}
         <div class="postal-fallback">
           <div class="postal-divider">or use a ZIP / postal code instead</div>
           <div class="postal-form">
-            <input type="text" id="postal-code-error" placeholder="e.g. 05602 or K1A" aria-label="ZIP or postal code" autocomplete="postal-code">
-            <button onclick="lookupPostalCode('error')">Go</button>
+            <input type="text" id="postal-code" placeholder="e.g. 05602 or K1A" aria-label="ZIP or postal code" autocomplete="postal-code">
+            <button onclick="lookupPostalCode()">Go</button>
           </div>
         </div>
       </div>
@@ -1737,6 +1737,8 @@ ${phSnippet}
     var visible = panel.style.display !== 'none';
     panel.style.display = visible ? 'none' : 'block';
     if (!visible) {
+      document.getElementById('override-error').style.display = 'none';
+      document.getElementById('postal-code-override').value = '';
       document.getElementById('postal-code-override').focus();
     }
   };
@@ -1757,6 +1759,8 @@ ${phSnippet}
       codeEl.focus();
       return;
     }
+    var errEl = document.getElementById('override-error');
+    errEl.style.display = 'none';
     var country = /^[A-Za-z]/.test(code) ? 'ca' : 'us';
     document.getElementById('loading').style.display = 'block';
     document.getElementById('loading').querySelector('p').textContent = 'Looking up location...';
@@ -1772,13 +1776,17 @@ ${phSnippet}
       })
       .catch(function(err) {
         safeCapture('forecast_error', { error_type: 'postal_code_error' });
-        showError(err.message || 'Could not look up that postal code.');
+        // Restore the existing forecast and show error inline in the panel
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('forecast-results').style.display = 'block';
+        errEl.textContent = err.message || 'Could not look up that postal code.';
+        errEl.style.display = 'block';
+        codeEl.focus();
       });
   };
 
-  window.lookupPostalCode = function(variant) {
-    var suffix = variant === 'error' ? '-error' : '';
-    var codeEl = document.getElementById('postal-code' + suffix);
+  window.lookupPostalCode = function() {
+    var codeEl = document.getElementById('postal-code');
     var code = codeEl.value.trim();
 
     if (!code) {
@@ -1838,9 +1846,6 @@ ${phSnippet}
 
   document.getElementById('postal-code').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') lookupPostalCode();
-  });
-  document.getElementById('postal-code-error').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') lookupPostalCode('error');
   });
   document.getElementById('postal-code-override').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') lookupOverrideLocation();
