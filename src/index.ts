@@ -429,6 +429,27 @@ ${phSnippet}
     font-weight: 500;
   }
 
+  .change-location-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: 0.78rem;
+    color: #6d6157;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .change-location-btn:hover {
+    color: #5C3D2E;
+  }
+
+  #location-override {
+    margin-top: 12px;
+    text-align: center;
+  }
+
   .map-container {
     border-radius: 10px;
     overflow: hidden;
@@ -1191,6 +1212,7 @@ ${phSnippet}
     <p>Ditch the 🔮 — let real forecast data tell you when to tap</p>
     <div class="header-bar" id="header-bar" style="display:none;">
       <span class="loc-text" id="loc-text"></span>
+      <button class="change-location-btn" onclick="toggleLocationOverride()">Change location</button>
       <div class="unit-toggle">
         <button id="btn-c" class="active" onclick="setUnit('C')">°C</button>
         <button id="btn-f" onclick="setUnit('F')">°F</button>
@@ -1200,6 +1222,12 @@ ${phSnippet}
       <span class="header-temp" id="current-temp"></span>
       <span class="header-sep">&middot;</span>
       <span id="current-summary"></span>
+    </div>
+    <div id="location-override" style="display:none;">
+      <div class="postal-form">
+        <input type="text" id="postal-code-override" placeholder="e.g. 05602 or K1A" aria-label="ZIP or postal code" autocomplete="postal-code">
+        <button onclick="lookupOverrideLocation()">Go</button>
+      </div>
     </div>
   </header>
 
@@ -1600,7 +1628,7 @@ ${phSnippet}
     document.getElementById('forecast-results').style.display = 'block';
   }
 
-  async function fetchForecast(lat, lon) {
+  async function fetchForecast(lat, lon, label) {
     document.getElementById('loading').style.display = 'block';
     document.getElementById('loading').querySelector('p').textContent = 'Fetching forecast...';
 
@@ -1612,8 +1640,9 @@ ${phSnippet}
       }
       forecastData = await resp.json();
       document.getElementById('loc-text').textContent =
-        lat.toFixed(1) + ', ' + lon.toFixed(1);
+        label || (lat.toFixed(1) + ', ' + lon.toFixed(1));
       document.getElementById('header-bar').style.display = 'flex';
+      document.getElementById('location-override').style.display = 'none';
 
       var delta = 0.05;
       var bbox = (lon - delta) + ',' + (lat - delta) + ',' +
@@ -1678,6 +1707,41 @@ ${phSnippet}
     document.getElementById('loading').style.display = 'block';
     document.getElementById('loading').querySelector('p').textContent = 'Detecting your location...';
     getLocation();
+  };
+
+  window.toggleLocationOverride = function() {
+    var panel = document.getElementById('location-override');
+    var visible = panel.style.display !== 'none';
+    panel.style.display = visible ? 'none' : 'block';
+    if (!visible) {
+      document.getElementById('postal-code-override').focus();
+    }
+  };
+
+  window.lookupOverrideLocation = function() {
+    var codeEl = document.getElementById('postal-code-override');
+    var code = codeEl.value.trim();
+    if (!code) {
+      codeEl.focus();
+      return;
+    }
+    var country = /^[A-Za-z]/.test(code) ? 'ca' : 'us';
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').querySelector('p').textContent = 'Looking up location...';
+    document.getElementById('forecast-results').style.display = 'none';
+    fetch('/api/geocode?postalCode=' + encodeURIComponent(code) + '&country=' + country)
+      .then(function(resp) {
+        if (!resp.ok) return resp.json().then(function(b) { throw new Error(b.error || 'Postal code not found'); });
+        return resp.json();
+      })
+      .then(function(geo) {
+        safeCapture('postal_code_lookup', { country: country, cached: geo.cached, source: 'override' });
+        fetchForecast(geo.lat, geo.lon, code.toUpperCase());
+      })
+      .catch(function(err) {
+        safeCapture('forecast_error', { error_type: 'postal_code_error' });
+        showError(err.message || 'Could not look up that postal code.');
+      });
   };
 
   window.lookupPostalCode = function(variant) {
@@ -1745,6 +1809,9 @@ ${phSnippet}
   });
   document.getElementById('postal-code-error').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') lookupPostalCode('error');
+  });
+  document.getElementById('postal-code-override').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') lookupOverrideLocation();
   });
 
   if ('requestIdleCallback' in window) {
