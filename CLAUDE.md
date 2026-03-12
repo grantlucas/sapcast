@@ -45,6 +45,15 @@ step):
 All temperatures are in Celsius. The scoring thresholds are exported constants
 at the top of `scoring.ts`.
 
+## Sap Collection Log
+
+Daily sap collection is tracked in `data/sap-collection.csv`. Columns:
+`date, temp_low_c, temp_high_c, rating, buckets_collected, notes`
+
+- `buckets_collected` is in full-bucket equivalents (e.g. two 3/4 buckets = 1.5)
+- `notes` should include actual liters collected when known
+- When the user mentions collecting sap, update this file with today's date and the amounts they provide
+
 ## Testing
 
 Tests live alongside source (`src/scoring.test.ts`). Only the pure scoring
