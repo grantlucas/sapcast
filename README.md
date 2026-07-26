@@ -2,40 +2,63 @@
 
 Based on local weather forecasts; when should I tap my maple tree?
 
-A simple web app that uses browser geolocation and an ensemble of weather forecasts to determine the optimal time to tap sugar maple trees for sap collection.
+A simple web app that uses browser geolocation and an ensemble of weather
+forecasts to determine the optimal time to tap sugar maple trees for sap
+collection.
+
+## Demo
+
+**[See Sapcast in action →](DEMO.md)** — an annotated walkthrough of every
+feature, from the five recommendation states to the per-model forecast
+breakdown and the tapping guides.
+
+Sapcast is only useful for about three weeks a year, so the walkthrough runs
+against synthetic mid-season weather (see
+[`demo/demo-server.mjs`](demo/demo-server.mjs)) scored by the real production
+code.
+
+[![Sapcast forecast overview](screenshots/overview-desktop.png)](DEMO.md)
 
 ## How it works
 
-The app analyses the 7-day forecast for freeze-thaw cycles — the key driver of maple sap flow. Each day is rated:
+The app analyses the 7-day forecast for freeze-thaw cycles — the key driver of
+maple sap flow. Each day is rated:
 
 - **Excellent** — overnight low -7°C to -2°C, daytime high 4°C to 10°C
 - **Good** — freezes at night, thaws above 2°C during the day
 - **Fair** — marginal freeze-thaw activity
 - **Poor** — no freeze-thaw cycle
 
-It then identifies the best consecutive run of favorable days and gives a clear recommendation.
+It then identifies the best consecutive run of favorable days and gives a clear
+recommendation.
 
 ## Setup
 
-1. **Get a Pirate Weather API key** (free): https://pirate-weather.apiable.io/
+1. **Get a Pirate Weather API key** (free):
+   [pirate-weather.apiable.io](https://pirate-weather.apiable.io/)
 2. Copy `.dev.vars.example` to `.dev.vars` and add your API key
 3. Install dependencies:
-   ```
+
+   ```bash
    npm install
    ```
+
 4. Create a KV namespace and update `wrangler.toml` with the IDs:
-   ```
+
+   ```bash
    npx wrangler kv namespace create FORECAST_CACHE
    npx wrangler kv namespace create FORECAST_CACHE --preview
    ```
+
 5. Run locally:
-   ```
+
+   ```bash
    npm run dev
    ```
 
 ## Deploy
 
-```
+```bash
 npx wrangler secret put PIRATE_WEATHER_API_KEY
 npm run deploy
 ```
