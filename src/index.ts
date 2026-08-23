@@ -2164,11 +2164,6 @@ ${phSnippet}
     <h1>Sapcast</h1>
     <p>See it in action — no location needed, no waiting for winter</p>
     <p style="margin-top:6px;"><a href="/" style="color:#6d6157;font-size:0.82rem;text-decoration:underline;text-underline-offset:2px;">← Back to the real forecast</a></p>
-    <div class="header-current" id="header-current" style="display:none;">
-      <span class="header-temp" id="current-temp"></span>
-      <span class="header-sep">&middot;</span>
-      <span id="current-summary"></span>
-    </div>
   </header>
 
   <div id="app">
@@ -2187,6 +2182,12 @@ ${phSnippet}
     </div>
 
     <div id="forecast-results">
+      <div class="header-current" id="header-current" style="display:none;margin-bottom:12px;">
+        <span class="header-temp" id="current-temp"></span>
+        <span class="header-sep">&middot;</span>
+        <span id="current-summary"></span>
+      </div>
+
       <div class="card" id="recommendation-card">
         <h2>Best Tapping Window</h2>
         <div id="recommendation"></div>
