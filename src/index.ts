@@ -247,118 +247,174 @@ async function handleGeocode(request: Request, env: Env): Promise<Response> {
   return Response.json({ ...result, cached: false });
 }
 
+// ── Demo scenarios ─────────────────────────────────────────────────────────
+//
+// Canned data for the hosted /demo page. Sapcast is only useful during the
+// ~3-week tapping season — outside it there's no freeze-thaw to show a
+// first-time visitor, so the live forecast can't make the case for itself.
+// These scenarios push fabricated but plausible temperatures through the
+// real scoring/ensemble code (scoreDay, findBestWindow,
+// generateRecommendation, getSeasonInfo, ensembleDaily), so every rating,
+// recommendation and date the demo shows is what the production code
+// actually computes — only the temperatures are made up. Ported from
+// demo/demo-server.mjs, which uses the same scenarios to generate the
+// screenshots in DEMO.md.
+
+const DEMO_TODAY = '2026-03-10';
+const DEMO_YEAR = 2026;
+const DEMO_LAT = 45.35; // Ottawa valley — a mid-range sugarbush latitude
+
+const DEMO_SOURCE_NAMES = ['Pirate Weather (US)', 'ECMWF (EU)', 'GEM (Canada)', 'GFS (US)'];
+
+// Per-model spread around each scenario's [low, high]. Offsets sum to zero so
+// the ensemble average lands exactly on the intended temperature.
+const DEMO_LOW_OFFSETS = [-0.9, 0.4, 1.1, -0.6];
+const DEMO_HIGH_OFFSETS = [0.7, -1.2, 0.8, -0.3];
+
+interface DemoScenario {
+  label: string;
+  current: CurrentConditions;
+  temps: [number, number][]; // [low, high] per day, °C
+  summaries: string[];
+}
+
+const DEMO_SCENARIOS: Record<string, DemoScenario> = {
+  'tap-now': {
+    label: 'Five-day excellent run starting today',
+    current: { temperature: 4.2, summary: 'Partly Cloudy', icon: 'partly-cloudy-day' },
+    temps: [[-5, 6], [-4, 7], [-6, 5], [-3, 9], [-2, 11], [1, 12], [-1, 8]],
+    summaries: [
+      'Partly cloudy throughout the day.',
+      'Clear throughout the day.',
+      'Light snow overnight.',
+      'Sunny and mild.',
+      'Mostly cloudy throughout the day.',
+      'Rain in the afternoon.',
+      'Clear throughout the day.',
+    ],
+  },
+  upcoming: {
+    label: 'Warm now, strong window opening Friday',
+    current: { temperature: 7.8, summary: 'Mostly Cloudy', icon: 'cloudy' },
+    temps: [[2, 8], [1, 6], [-1, 1], [-4, 5], [-6, 6], [-3, 8], [-8, 3]],
+    summaries: [
+      'Mostly cloudy throughout the day.',
+      'Drizzle in the morning.',
+      'Snow showers throughout the day.',
+      'Clear throughout the day.',
+      'Sunny and cold.',
+      'Partly cloudy throughout the day.',
+      'Cold with clear skies.',
+    ],
+  },
+  marginal: {
+    label: 'Only a brief one-day window — no real run',
+    current: { temperature: -1.4, summary: 'Flurries', icon: 'snow' },
+    temps: [[-9, 3], [-1, 3], [-4, 6], [-1, 2], [1, 5], [-10, 1], [-8, 3]],
+    summaries: [
+      'Flurries in the morning.',
+      'Overcast throughout the day.',
+      'Sunny and mild.',
+      'Light snow in the evening.',
+      'Rain throughout the day.',
+      'Clear and very cold.',
+      'Partly cloudy throughout the day.',
+    ],
+  },
+  'too-cold': {
+    label: 'Deep freeze — nothing thaws',
+    current: { temperature: -16.3, summary: 'Clear', icon: 'clear-day' },
+    temps: [[-18, -6], [-20, -8], [-15, -3], [-12, 0], [-14, -2], [-16, -5], [-11, 1]],
+    summaries: [
+      'Clear and frigid.',
+      'Clear throughout the day.',
+      'Partly cloudy throughout the day.',
+      'Light snow in the afternoon.',
+      'Mostly cloudy throughout the day.',
+      'Clear and very cold.',
+      'Flurries in the morning.',
+    ],
+  },
+  'season-over': {
+    label: 'Season done — no freezing nights left',
+    current: { temperature: 13.1, summary: 'Sunny', icon: 'clear-day' },
+    temps: [[3, 14], [4, 16], [5, 15], [6, 18], [4, 13], [5, 16], [7, 19]],
+    summaries: [
+      'Sunny throughout the day.',
+      'Warm and clear.',
+      'Partly cloudy throughout the day.',
+      'Sunny and warm.',
+      'Rain in the morning.',
+      'Mostly sunny throughout the day.',
+      'Warm with clear skies.',
+    ],
+  },
+};
+
+function demoDates(n: number): string[] {
+  const out: string[] = [];
+  const start = new Date(DEMO_TODAY + 'T12:00:00Z');
+  for (let i = 0; i < n; i++) {
+    const d = new Date(start);
+    d.setUTCDate(d.getUTCDate() + i);
+    out.push(d.toISOString().split('T')[0]);
+  }
+  return out;
+}
+
+function buildDemoForecast(name: string): ForecastResult {
+  const sc = DEMO_SCENARIOS[name] ?? DEMO_SCENARIOS['tap-now'];
+  const dates = demoDates(sc.temps.length);
+
+  const namedSources = DEMO_SOURCE_NAMES.map((sourceName, si) => ({
+    name: sourceName,
+    days: dates.map((date, di) => ({
+      date,
+      tempLow: sc.temps[di][0] + DEMO_LOW_OFFSETS[si],
+      tempHigh: sc.temps[di][1] + DEMO_HIGH_OFFSETS[si],
+    })),
+  }));
+
+  const ensembled = ensembleDaily(namedSources.map((s) => s.days));
+
+  const sourcesMap: Record<string, Record<string, SourceDay>> = {};
+  for (const { name: sourceName, days: sDays } of namedSources) {
+    const byDate: Record<string, SourceDay> = {};
+    for (const d of sDays) {
+      byDate[d.date] = { tempHigh: d.tempHigh, tempLow: d.tempLow };
+    }
+    sourcesMap[sourceName] = byDate;
+  }
+
+  const days: ForecastDay[] = ensembled.map(({ date, tempHigh, tempLow }, i) => {
+    const { rating, score } = scoreDay(tempLow, tempHigh);
+    return { date, tempHigh, tempLow, summary: sc.summaries[i] ?? '', icon: '', rating, score };
+  });
+
+  const bestWindow = findBestWindow(days);
+  const recommendation = generateRecommendation(days, bestWindow);
+  const seasonInfo = getSeasonInfo(DEMO_LAT, DEMO_YEAR);
+
+  return {
+    current: sc.current,
+    today: days[0] ?? null,
+    days,
+    sources: sourcesMap,
+    bestWindow: bestWindow ? {
+      startDate: bestWindow.start,
+      endDate: bestWindow.end,
+      length: bestWindow.days.length,
+      avgScore: bestWindow.totalScore / bestWindow.days.length,
+    } : null,
+    recommendation,
+    seasonInfo,
+    cached: false,
+  };
+}
+
 // ── Frontend HTML ──────────────────────────────────────────────────────────
 
-function getHTML(posthogKey?: string): string {
-  const phSnippet = posthogKey
-    ? `<script>!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+" (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys getNextSurveyStep onSessionId setPersonPropertiesForFlags".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);posthog.init('${posthogKey}',{api_host:'https://us.i.posthog.com',person_profiles:'identified_only'})</script>`
-    : '';
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍁</text></svg>">
-<title>Sapcast — Maple Sap Tapping Forecast</title>
-<meta name="description" content="Free maple sap tapping forecast. Uses your location and 7-day weather data to analyze freeze-thaw cycles and recommend the best days to tap sugar maple trees.">
-<meta property="og:title" content="Sapcast — Maple Sap Tapping Forecast">
-<meta property="og:description" content="Analyze 7-day freeze-thaw cycles to find the best days for tapping sugar maple trees. Free, location-based forecast.">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Sapcast — Maple Sap Tapping Forecast">
-<meta name="twitter:description" content="Analyze 7-day freeze-thaw cycles to find the best days for tapping sugar maple trees. Free, location-based forecast.">
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "WebApplication",
-      "name": "Sapcast",
-      "description": "Free maple sap tapping forecast that analyzes 7-day freeze-thaw cycles to recommend the best days to tap sugar maple trees.",
-      "applicationCategory": "WeatherApplication",
-      "operatingSystem": "Any",
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "USD"
-      }
-    },
-    {
-      "@type": "HowTo",
-      "name": "How to Tap Maple Trees",
-      "description": "A step-by-step guide to tapping sugar maple trees for sap collection and syrup production.",
-      "step": [
-        {
-          "@type": "HowToStep",
-          "name": "Choose a tree",
-          "text": "Pick a healthy sugar maple at least 30 cm (12 in) in diameter. A tree 12-18 in diameter supports one tap; larger than 18 in can take two."
-        },
-        {
-          "@type": "HowToStep",
-          "name": "Drill the tap hole",
-          "text": "Use a 5/16 or 7/16 inch bit, about 5 cm (2 in) deep at a slight upward angle. Place the tap above a large root or below a large branch on the south-facing side."
-        },
-        {
-          "@type": "HowToStep",
-          "name": "Check your shavings",
-          "text": "Light-coloured chips mean healthy sapwood. Dark shavings mean pick a different spot."
-        },
-        {
-          "@type": "HowToStep",
-          "name": "Collect sap",
-          "text": "Hang a food-safe, lidded bucket or attach tubing to the spile. Collect sap daily and refrigerate it — sap spoils quickly above freezing."
-        },
-        {
-          "@type": "HowToStep",
-          "name": "Boil into syrup",
-          "text": "It takes roughly 40 litres of sap to make 1 litre of syrup. Boil outdoors — the steam will peel wallpaper indoors."
-        },
-        {
-          "@type": "HowToStep",
-          "name": "Pull taps at end of season",
-          "text": "Once temperatures stay above freezing consistently or buds appear on branches, pull your spiles. Remove spiles with pliers and let tap holes heal on their own."
-        }
-      ]
-    },
-    {
-      "@type": "FAQPage",
-      "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "What is the freeze-thaw cycle for maple sap?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Maple sap flows when nighttime temperatures drop below freezing and daytime temperatures rise above freezing. This creates pressure changes inside the tree that push sap through the tap. Ideal conditions are overnight lows of -7\\u00b0C to -2\\u00b0C with daytime highs of 4\\u00b0C to 10\\u00b0C."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "When is the best time to tap maple trees?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "The best sap runs happen during extended stretches of freeze-thaw days, typically in late winter to early spring. A single good day produces less sap than a 5-day run of consecutive freeze-thaw cycles."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "When should I stop tapping and pull my spiles?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Pull your taps when temperatures stay above freezing consistently (ending the freeze-thaw cycle) or when buds appear on the branches. Budding sap develops an off 'buddy' flavour that won't make good syrup."
-          }
-        }
-      ]
-    }
-  ]
-}
-</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
-${phSnippet}
-<style>
+const PAGE_STYLES = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
@@ -1231,13 +1287,233 @@ ${phSnippet}
     height: 1px;
     background: #d5cfc6;
   }
-</style>
+`;
+
+const HOW_IT_WORKS_HTML = `
+      <div class="card how-it-works">
+        <h2>How It Works</h2>
+        <h3>The Freeze-Thaw Cycle</h3>
+        <p>Maple sap flows when nighttime temperatures drop below freezing and daytime
+           temperatures rise above freezing. This creates pressure changes inside the
+           tree that push sap through the tap.</p>
+        <h3>What the Ratings Mean</h3>
+        <ul>
+          <li><strong>Excellent:</strong> Ideal freeze-thaw — overnight lows of -7°C to -2°C with daytime highs of 4°C to 10°C.</li>
+          <li><strong>Good:</strong> Solid freeze-thaw cycle — freezes overnight, thaws above 2°C during the day.</li>
+          <li><strong>Fair:</strong> Marginal — some freeze-thaw activity but temperatures are outside the ideal range.</li>
+          <li><strong>Poor:</strong> No freeze-thaw cycle — either too warm (no freeze) or too cold (no thaw).</li>
+        </ul>
+        <h3>Consecutive Days Matter</h3>
+        <p>The best sap runs happen during extended stretches of freeze-thaw days. A
+           single good day produces less sap than a 5-day run. The "Best Tapping Window"
+           highlights the longest stretch of good-or-better conditions in the forecast.</p>
+      </div>
+`;
+
+const TAPPING_GUIDES_HTML = `
+      <div class="card tapping-guides">
+        <h2>Tapping Guides</h2>
+        <h3>Choosing &amp; Tapping a Tree</h3>
+        <p>Pick a healthy sugar maple at least 30 cm (12 in) in diameter. Place
+           the tap above a large root or below a large branch on the south-facing
+           side for the earliest flow.</p>
+        <ul>
+          <li><strong>Tree size:</strong> 12–18 in diameter supports one tap; larger than 18 in can take two (<a href="https://vermontevaporator.com/diy-maple-syrup-how-to-tap-2/" target="_blank" rel="noopener">Vermont Evaporator Co.</a>).</li>
+          <li><strong>Drill:</strong> Use a 5/16″ or 7/16″ bit, about 5 cm (2 in) deep at a slight upward angle.</li>
+          <li><strong>Check your shavings:</strong> Light-coloured chips mean healthy sapwood — dark shavings mean pick a different spot (<a href="https://tapmytrees.com/tap-tree/" target="_blank" rel="noopener">Tap My Trees</a>).</li>
+        </ul>
+        <h3>Collecting &amp; Boiling</h3>
+        <p>Hang a food-safe, lidded bucket or attach tubing to the spile. Collect
+           sap daily and refrigerate it — sap spoils quickly above freezing.</p>
+        <ul>
+          <li><strong>Ratio:</strong> It takes roughly 40 litres of sap to make 1 litre of syrup.</li>
+          <li><strong>Boil outdoors:</strong> The steam will peel wallpaper indoors (<a href="https://www.almanac.com/making-maple-syrup-answering-common-questions" target="_blank" rel="noopener">Old Farmer's Almanac</a>).</li>
+        </ul>
+        <h3>When to Pull Your Taps</h3>
+        <p>Without the freeze-thaw cycle, sap flow stops. Watch for these signs
+           that the season is over:</p>
+        <ul>
+          <li><strong>No more freezing nights:</strong> Once temperatures stay above freezing consistently, flow dries up (<a href="https://www.motherearthnews.com/homesteading-and-livestock/end-of-maple-tapping-season-zbcz1503/" target="_blank" rel="noopener">Mother Earth News</a>).</li>
+          <li><strong>Bud break:</strong> Once buds appear on the branches, sap develops an off "buddy" flavour that won't make good syrup. Pull your spiles before buds open.</li>
+        </ul>
+        <h3>End-of-Season Cleanup</h3>
+        <p>Remove spiles with pliers and let tap holes heal on their own — don't
+           plug them.</p>
+        <ul>
+          <li><strong>Clean equipment:</strong> Scrub with dilute bleach (1 part unscented bleach to 20 parts water), then triple-rinse with hot water (<a href="https://tapmytrees.com/cleanup/" target="_blank" rel="noopener">Tap My Trees</a>).</li>
+          <li><strong>Store dry:</strong> Keep spiles, buckets, and lids in a dry, dust-free place until next season (<a href="https://vermontevaporator.com/end-of-season-clean-up-pulling-taps-and-flushing-lines/" target="_blank" rel="noopener">Vermont Evaporator Co.</a>).</li>
+        </ul>
+      </div>
+`;
+
+const SOURCES_FOOTER_HTML = `
+      <h2>Sources &amp; Further Reading</h2>
+      <ul>
+        <li>
+          Tyree, M.T. (1983). "Maple Sap Uptake, Exudation, and Pressure Changes
+          Correlated with Freezing Exotherms and Thawing Endotherms."
+          <em>Plant Physiology</em>, 73(2), 277–285.
+          <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC1066453/" target="_blank" rel="noopener">PMC</a>
+        </li>
+        <li>
+          Rapp, J.M. et al. (2019). "Finding the Sweet Spot: Shifting Optimal
+          Climate for Maple Syrup Production in North America."
+          <em>Forest Ecology and Management</em>.
+          <a href="https://www.sciencedirect.com/science/article/pii/S0378112719303019" target="_blank" rel="noopener">ScienceDirect</a>
+        </li>
+        <li>
+          Graf, I. et al. (2024). "Experimental and Computational Comparison of
+          Freeze–Thaw-Induced Pressure Generation in Red and Sugar Maple."
+          <em>Tree Physiology</em>, 44(4).
+          <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC11448476/" target="_blank" rel="noopener">PMC</a>
+        </li>
+        <li>
+          <a href="https://www.uvm.edu/cals/proctor-maple-research-center" target="_blank" rel="noopener">UVM Proctor Maple Research Center</a>
+          — the oldest maple research center in the world (est. 1946)
+        </li>
+        <li>
+          <a href="https://blogs.cornell.edu/cornellmaple/" target="_blank" rel="noopener">Cornell Sugar Maple Research &amp; Extension Program</a>
+          — production research and climate monitoring
+        </li>
+        <li>
+          <a href="https://www.massmaple.org/about-maple-syrup/how-sugar-maple-trees-work/" target="_blank" rel="noopener">Massachusetts Maple Producers Association</a>
+          — how sugar maple trees work
+        </li>
+        <li>
+          <a href="https://umaine.edu/ecologyandenvironmentalsciences/2014/02/19/making-sense-of-maple-syrup/" target="_blank" rel="noopener">University of Maine</a>
+          — making sense of maple syrup
+        </li>
+      </ul>
+      <p class="footer-note">
+        Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>
+        and <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (ECMWF/EU, GEM/Canada, GFS/US models).
+      </p>
+      <p class="footer-note">
+        Built with care for 3 out of 52 weeks per year by <a href="https://grantlucas.com/" target="_blank" rel="noopener">Grant Lucas</a>.
+      </p>
+`;
+
+function posthogSnippet(posthogKey?: string): string {
+  return posthogKey
+    ? `<script>!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+" (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys getNextSurveyStep onSessionId setPersonPropertiesForFlags".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);posthog.init('${posthogKey}',{api_host:'https://us.i.posthog.com',person_profiles:'identified_only'})</script>`
+    : '';
+}
+
+function getHTML(posthogKey?: string): string {
+  const phSnippet = posthogSnippet(posthogKey);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍁</text></svg>">
+<title>Sapcast — Maple Sap Tapping Forecast</title>
+<meta name="description" content="Free maple sap tapping forecast. Uses your location and 7-day weather data to analyze freeze-thaw cycles and recommend the best days to tap sugar maple trees.">
+<meta property="og:title" content="Sapcast — Maple Sap Tapping Forecast">
+<meta property="og:description" content="Analyze 7-day freeze-thaw cycles to find the best days for tapping sugar maple trees. Free, location-based forecast.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Sapcast — Maple Sap Tapping Forecast">
+<meta name="twitter:description" content="Analyze 7-day freeze-thaw cycles to find the best days for tapping sugar maple trees. Free, location-based forecast.">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebApplication",
+      "name": "Sapcast",
+      "description": "Free maple sap tapping forecast that analyzes 7-day freeze-thaw cycles to recommend the best days to tap sugar maple trees.",
+      "applicationCategory": "WeatherApplication",
+      "operatingSystem": "Any",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      }
+    },
+    {
+      "@type": "HowTo",
+      "name": "How to Tap Maple Trees",
+      "description": "A step-by-step guide to tapping sugar maple trees for sap collection and syrup production.",
+      "step": [
+        {
+          "@type": "HowToStep",
+          "name": "Choose a tree",
+          "text": "Pick a healthy sugar maple at least 30 cm (12 in) in diameter. A tree 12-18 in diameter supports one tap; larger than 18 in can take two."
+        },
+        {
+          "@type": "HowToStep",
+          "name": "Drill the tap hole",
+          "text": "Use a 5/16 or 7/16 inch bit, about 5 cm (2 in) deep at a slight upward angle. Place the tap above a large root or below a large branch on the south-facing side."
+        },
+        {
+          "@type": "HowToStep",
+          "name": "Check your shavings",
+          "text": "Light-coloured chips mean healthy sapwood. Dark shavings mean pick a different spot."
+        },
+        {
+          "@type": "HowToStep",
+          "name": "Collect sap",
+          "text": "Hang a food-safe, lidded bucket or attach tubing to the spile. Collect sap daily and refrigerate it — sap spoils quickly above freezing."
+        },
+        {
+          "@type": "HowToStep",
+          "name": "Boil into syrup",
+          "text": "It takes roughly 40 litres of sap to make 1 litre of syrup. Boil outdoors — the steam will peel wallpaper indoors."
+        },
+        {
+          "@type": "HowToStep",
+          "name": "Pull taps at end of season",
+          "text": "Once temperatures stay above freezing consistently or buds appear on branches, pull your spiles. Remove spiles with pliers and let tap holes heal on their own."
+        }
+      ]
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is the freeze-thaw cycle for maple sap?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Maple sap flows when nighttime temperatures drop below freezing and daytime temperatures rise above freezing. This creates pressure changes inside the tree that push sap through the tap. Ideal conditions are overnight lows of -7\\u00b0C to -2\\u00b0C with daytime highs of 4\\u00b0C to 10\\u00b0C."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "When is the best time to tap maple trees?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "The best sap runs happen during extended stretches of freeze-thaw days, typically in late winter to early spring. A single good day produces less sap than a 5-day run of consecutive freeze-thaw cycles."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "When should I stop tapping and pull my spiles?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Pull your taps when temperatures stay above freezing consistently (ending the freeze-thaw cycle) or when buds appear on the branches. Budding sap develops an off 'buddy' flavour that won't make good syrup."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
+${phSnippet}
+<style>${PAGE_STYLES}</style>
 </head>
 <body>
 <div class="container">
   <header>
     <h1>Sapcast</h1>
     <p>Ditch the 🔮 — let real forecast data tell you when to tap</p>
+    <p style="margin-top:6px;"><a href="/demo" style="color:#6d6157;font-size:0.82rem;text-decoration:underline;text-underline-offset:2px;">New here? See a working example →</a></p>
     <div class="header-bar" id="header-bar" style="display:none;">
       <span class="loc-text" id="loc-text"></span>
       <button class="change-location-btn" onclick="toggleLocationOverride()">Change location</button>
@@ -1348,105 +1624,13 @@ ${phSnippet}
 
     <!-- Static content (always visible, no JS needed) -->
     <main>
-      <div class="card how-it-works">
-        <h2>How It Works</h2>
-        <h3>The Freeze-Thaw Cycle</h3>
-        <p>Maple sap flows when nighttime temperatures drop below freezing and daytime
-           temperatures rise above freezing. This creates pressure changes inside the
-           tree that push sap through the tap.</p>
-        <h3>What the Ratings Mean</h3>
-        <ul>
-          <li><strong>Excellent:</strong> Ideal freeze-thaw — overnight lows of -7°C to -2°C with daytime highs of 4°C to 10°C.</li>
-          <li><strong>Good:</strong> Solid freeze-thaw cycle — freezes overnight, thaws above 2°C during the day.</li>
-          <li><strong>Fair:</strong> Marginal — some freeze-thaw activity but temperatures are outside the ideal range.</li>
-          <li><strong>Poor:</strong> No freeze-thaw cycle — either too warm (no freeze) or too cold (no thaw).</li>
-        </ul>
-        <h3>Consecutive Days Matter</h3>
-        <p>The best sap runs happen during extended stretches of freeze-thaw days. A
-           single good day produces less sap than a 5-day run. The "Best Tapping Window"
-           highlights the longest stretch of good-or-better conditions in the forecast.</p>
-      </div>
+      ${HOW_IT_WORKS_HTML}
 
-      <div class="card tapping-guides">
-        <h2>Tapping Guides</h2>
-        <h3>Choosing &amp; Tapping a Tree</h3>
-        <p>Pick a healthy sugar maple at least 30 cm (12 in) in diameter. Place
-           the tap above a large root or below a large branch on the south-facing
-           side for the earliest flow.</p>
-        <ul>
-          <li><strong>Tree size:</strong> 12–18 in diameter supports one tap; larger than 18 in can take two (<a href="https://vermontevaporator.com/diy-maple-syrup-how-to-tap-2/" target="_blank" rel="noopener">Vermont Evaporator Co.</a>).</li>
-          <li><strong>Drill:</strong> Use a 5/16″ or 7/16″ bit, about 5 cm (2 in) deep at a slight upward angle.</li>
-          <li><strong>Check your shavings:</strong> Light-coloured chips mean healthy sapwood — dark shavings mean pick a different spot (<a href="https://tapmytrees.com/tap-tree/" target="_blank" rel="noopener">Tap My Trees</a>).</li>
-        </ul>
-        <h3>Collecting &amp; Boiling</h3>
-        <p>Hang a food-safe, lidded bucket or attach tubing to the spile. Collect
-           sap daily and refrigerate it — sap spoils quickly above freezing.</p>
-        <ul>
-          <li><strong>Ratio:</strong> It takes roughly 40 litres of sap to make 1 litre of syrup.</li>
-          <li><strong>Boil outdoors:</strong> The steam will peel wallpaper indoors (<a href="https://www.almanac.com/making-maple-syrup-answering-common-questions" target="_blank" rel="noopener">Old Farmer's Almanac</a>).</li>
-        </ul>
-        <h3>When to Pull Your Taps</h3>
-        <p>Without the freeze-thaw cycle, sap flow stops. Watch for these signs
-           that the season is over:</p>
-        <ul>
-          <li><strong>No more freezing nights:</strong> Once temperatures stay above freezing consistently, flow dries up (<a href="https://www.motherearthnews.com/homesteading-and-livestock/end-of-maple-tapping-season-zbcz1503/" target="_blank" rel="noopener">Mother Earth News</a>).</li>
-          <li><strong>Bud break:</strong> Once buds appear on the branches, sap develops an off "buddy" flavour that won't make good syrup. Pull your spiles before buds open.</li>
-        </ul>
-        <h3>End-of-Season Cleanup</h3>
-        <p>Remove spiles with pliers and let tap holes heal on their own — don't
-           plug them.</p>
-        <ul>
-          <li><strong>Clean equipment:</strong> Scrub with dilute bleach (1 part unscented bleach to 20 parts water), then triple-rinse with hot water (<a href="https://tapmytrees.com/cleanup/" target="_blank" rel="noopener">Tap My Trees</a>).</li>
-          <li><strong>Store dry:</strong> Keep spiles, buckets, and lids in a dry, dust-free place until next season (<a href="https://vermontevaporator.com/end-of-season-clean-up-pulling-taps-and-flushing-lines/" target="_blank" rel="noopener">Vermont Evaporator Co.</a>).</li>
-        </ul>
-      </div>
+      ${TAPPING_GUIDES_HTML}
     </main>
 
     <footer>
-      <h2>Sources &amp; Further Reading</h2>
-      <ul>
-        <li>
-          Tyree, M.T. (1983). "Maple Sap Uptake, Exudation, and Pressure Changes
-          Correlated with Freezing Exotherms and Thawing Endotherms."
-          <em>Plant Physiology</em>, 73(2), 277–285.
-          <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC1066453/" target="_blank" rel="noopener">PMC</a>
-        </li>
-        <li>
-          Rapp, J.M. et al. (2019). "Finding the Sweet Spot: Shifting Optimal
-          Climate for Maple Syrup Production in North America."
-          <em>Forest Ecology and Management</em>.
-          <a href="https://www.sciencedirect.com/science/article/pii/S0378112719303019" target="_blank" rel="noopener">ScienceDirect</a>
-        </li>
-        <li>
-          Graf, I. et al. (2024). "Experimental and Computational Comparison of
-          Freeze–Thaw-Induced Pressure Generation in Red and Sugar Maple."
-          <em>Tree Physiology</em>, 44(4).
-          <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC11448476/" target="_blank" rel="noopener">PMC</a>
-        </li>
-        <li>
-          <a href="https://www.uvm.edu/cals/proctor-maple-research-center" target="_blank" rel="noopener">UVM Proctor Maple Research Center</a>
-          — the oldest maple research center in the world (est. 1946)
-        </li>
-        <li>
-          <a href="https://blogs.cornell.edu/cornellmaple/" target="_blank" rel="noopener">Cornell Sugar Maple Research &amp; Extension Program</a>
-          — production research and climate monitoring
-        </li>
-        <li>
-          <a href="https://www.massmaple.org/about-maple-syrup/how-sugar-maple-trees-work/" target="_blank" rel="noopener">Massachusetts Maple Producers Association</a>
-          — how sugar maple trees work
-        </li>
-        <li>
-          <a href="https://umaine.edu/ecologyandenvironmentalsciences/2014/02/19/making-sense-of-maple-syrup/" target="_blank" rel="noopener">University of Maine</a>
-          — making sense of maple syrup
-        </li>
-      </ul>
-      <p class="footer-note">
-        Weather data provided by <a href="https://pirateweather.net/" target="_blank" rel="noopener">Pirate Weather</a>
-        and <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (ECMWF/EU, GEM/Canada, GFS/US models).
-      </p>
-      <p class="footer-note">
-        Built with care for 3 out of 52 weeks per year by <a href="https://grantlucas.com/" target="_blank" rel="noopener">Grant Lucas</a>.
-      </p>
+      ${SOURCES_FOOTER_HTML}
     </footer>
   </div>
 </div>
@@ -1864,6 +2048,320 @@ ${phSnippet}
 </html>`;
 }
 
+// ── Hosted demo page ────────────────────────────────────────────────────────
+//
+// Sapcast is only useful during the ~3-week tapping season, so an off-season
+// visitor who lands on sapcast.ca sees nothing but "poor" days. /demo is a
+// standalone page — same UI, same scoring code — seeded with the canned
+// DEMO_SCENARIOS above instead of a live weather fetch, so it can make the
+// case for the tool year-round.
+
+const DEMO_SCENARIO_ORDER = ['tap-now', 'upcoming', 'marginal', 'too-cold', 'season-over'];
+
+const DEMO_TAB_LABELS: Record<string, string> = {
+  'tap-now': 'Tap now',
+  upcoming: 'Coming this week',
+  marginal: 'One good day',
+  'too-cold': 'Still frozen solid',
+  'season-over': "Season's over",
+};
+
+const DEMO_CAPTIONS: Record<string, string> = {
+  'tap-now': "This is the week you want. Five nights below freezing in a row, each day climbing back into the thaw — that's a proper run, not a fluke. I've had five-day stretches like this out-produce the two weeks around them combined. If your taps aren't in yet, this is the forecast that gets you off the couch.",
+  upcoming: "Nothing worth tapping for yet, but Friday starts a real three-day run. I'd use these few days to actually get taps in and buckets hung, so I'm not scrambling on the first good morning — waiting for the freeze-thaw to show up before you go drill holes is how you miss the first day of a run.",
+  marginal: "There's one good day buried in here, and normally I'd tell you to sit on your hands. One day alone barely fills a bucket — I've tapped for exactly this kind of day before and gotten a liter for the trouble, plus a hole in a tree I didn't need yet. This is the forecast being honest instead of talking you into something.",
+  'too-cold': "Nothing's thawing — daytime highs never crack 2°C, so nothing is going to move no matter how many buckets you hang. I've made the drive out in weather like this because the calendar said ‘sugaring season’ and come back with bare taps. The tree doesn't care what the calendar says, only what the thermometer does.",
+  'season-over': "No freezing nights left anywhere in the week. Once that happens the flow doesn't come back — this is your sign to pull the taps, not wait it out. Buds are usually close behind, and sap collected after bud break turns the syrup off-flavor, so there's a real cost to leaving taps in past this point.",
+};
+
+function getDemoHTML(posthogKey?: string): string {
+  const phSnippet = posthogSnippet(posthogKey);
+
+  const demoData: Record<string, ForecastResult> = {};
+  for (const name of DEMO_SCENARIO_ORDER) {
+    demoData[name] = buildDemoForecast(name);
+  }
+
+  const tabsHTML = DEMO_SCENARIO_ORDER.map((name, i) =>
+    `<button class="scenario-tab${i === 0 ? ' active' : ''}" data-scenario="${name}" onclick="setScenario('${name}')">${DEMO_TAB_LABELS[name]}</button>`
+  ).join('\n        ');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍁</text></svg>">
+<title>Sapcast — See It In Action</title>
+<meta name="description" content="A live look at Sapcast's tapping forecast — real scoring code, a hand-picked week — so you can see how it works before the season starts.">
+<meta property="og:title" content="Sapcast — See It In Action">
+<meta property="og:description" content="A live look at Sapcast's tapping forecast — real scoring code, a hand-picked week — so you can see how it works before the season starts.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Sapcast — See It In Action">
+<meta name="twitter:description" content="A live look at Sapcast's tapping forecast — real scoring code, a hand-picked week — so you can see how it works before the season starts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
+${phSnippet}
+<style>${PAGE_STYLES}
+  .demo-intro p {
+    margin-bottom: 12px;
+    color: #4a4038;
+  }
+
+  .demo-intro p:last-child {
+    margin-bottom: 0;
+  }
+
+  .scenario-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .scenario-tab {
+    padding: 8px 14px;
+    border: 1px solid #d4cdc6;
+    background: #fff;
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.84rem;
+    font-weight: 500;
+    color: #2c2520;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+
+  .scenario-tab:hover {
+    border-color: #8B6F47;
+  }
+
+  .scenario-tab.active {
+    background: #8B6F47;
+    border-color: #8B6F47;
+    color: #fff;
+  }
+
+  .scenario-caption {
+    color: #4a4038;
+    font-size: 0.92rem;
+    border-top: 1px solid #ece7e0;
+    padding-top: 12px;
+  }
+
+  .demo-footer-cta {
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Sapcast</h1>
+    <p>See it in action — no location needed, no waiting for winter</p>
+    <p style="margin-top:6px;"><a href="/" style="color:#6d6157;font-size:0.82rem;text-decoration:underline;text-underline-offset:2px;">← Back to the real forecast</a></p>
+    <div class="header-current" id="header-current" style="display:none;">
+      <span class="header-temp" id="current-temp"></span>
+      <span class="header-sep">&middot;</span>
+      <span id="current-summary"></span>
+    </div>
+  </header>
+
+  <div id="app">
+    <div class="card demo-intro">
+      <p>It's August. There's no freeze-thaw happening anywhere right now, so if you opened the real forecast today it would just tell you every day is poor and leave it at that — true, but useless.</p>
+      <p>This page is what the real app looks like in the middle of a good week. The temperatures below are made up; the ratings, the recommendation, and the tap-by dates are not — they're the same scoring code that runs on sapcast.ca every morning during sugaring season, just fed a week I picked instead of one it fetched.</p>
+      <p>I built this after a few seasons of checking five different weather sites every morning and still guessing wrong. &ldquo;-2&deg;C&rdquo; doesn't tell you anything by itself — what matters is whether last night froze hard, whether today actually thaws, and whether that keeps happening for more than a day. That's the only thing this tool computes.</p>
+    </div>
+
+    <div class="card demo-switcher">
+      <h2>Try a week</h2>
+      <div class="scenario-tabs" id="scenario-tabs">
+        ${tabsHTML}
+      </div>
+      <p class="scenario-caption" id="scenario-caption"></p>
+    </div>
+
+    <div id="forecast-results">
+      <div class="card" id="recommendation-card">
+        <h2>Best Tapping Window</h2>
+        <div id="recommendation"></div>
+      </div>
+
+      <div class="card" id="season-info-card">
+        <h2>Season Timing</h2>
+        <div id="season-info"></div>
+      </div>
+
+      <div class="card forecast-card">
+        <h2>7-Day Forecast</h2>
+        <p class="forecast-subtitle">Aggregated from multiple weather models. Tap any day to see per-source details.</p>
+        <div class="forecast-list" id="forecast-list"></div>
+      </div>
+    </div>
+
+    <main>
+      ${HOW_IT_WORKS_HTML}
+
+      ${TAPPING_GUIDES_HTML}
+    </main>
+
+    <footer>
+      ${SOURCES_FOOTER_HTML}
+      <p class="footer-note demo-footer-cta">
+        None of this is hypothetical once the season starts — same page, same code, live
+        weather instead of a scenario I picked. <a href="/" target="_self">Bookmark sapcast.ca</a>
+        and open it again the first cold morning in late winter.
+      </p>
+    </footer>
+  </div>
+</div>
+
+<script>
+(function() {
+  var DEMO_DATA = ${JSON.stringify(demoData)};
+  var CAPTIONS = ${JSON.stringify(DEMO_CAPTIONS)};
+  var forecastData = null;
+  var unit = 'C';
+
+  function safeCapture(event, props) {
+    if (typeof posthog !== 'undefined') {
+      posthog.capture(event, props || {});
+    }
+  }
+
+  function toF(c) {
+    return c !== null ? (c * 9/5) + 32 : null;
+  }
+
+  function tempStr(c) {
+    if (c === null) return '--';
+    var v = unit === 'F' ? toF(c) : c;
+    return Math.round(v) + '°' + unit;
+  }
+
+  function ratingLabel(r) {
+    return r.charAt(0).toUpperCase() + r.slice(1);
+  }
+
+  function dayName(dateStr) {
+    var d = new Date(dateStr + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+
+  function formatWindowDates(start, end) {
+    var s = new Date(start + 'T12:00:00');
+    var e = new Date(end + 'T12:00:00');
+    var opts = { month: 'short', day: 'numeric' };
+    if (start === end) return s.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    return s.toLocaleDateString('en-US', opts) + ' – ' + e.toLocaleDateString('en-US', opts);
+  }
+
+  var recIcons = {
+    tap_now: '\\u{1F3AF}',
+    upcoming: '\\u{1F4C5}',
+    no_window: '\\u{1F32B}',
+    season_over: '\\u{2600}',
+    too_cold: '\\u{2744}'
+  };
+
+  function render() {
+    if (!forecastData) return;
+    var d = forecastData;
+
+    document.getElementById('current-temp').textContent = tempStr(d.current.temperature);
+    document.getElementById('current-summary').textContent = d.current.summary;
+    document.getElementById('header-current').style.display = 'flex';
+
+    var recEl = document.getElementById('recommendation');
+    var rec = d.recommendation;
+    var recHTML = '<div class="recommendation-box rec-' + rec.type + '">';
+    recHTML += '<span class="rec-icon">' + (recIcons[rec.type] || '') + '</span>';
+    recHTML += '<div>';
+    recHTML += '<div style="font-weight:600;">' + rec.message + '</div>';
+    if (d.bestWindow) {
+      recHTML += '<div class="window-dates" style="margin-top:6px;">'
+        + formatWindowDates(d.bestWindow.startDate, d.bestWindow.endDate) + '</div>';
+      recHTML += '<div class="window-detail">'
+        + d.bestWindow.length + ' day' + (d.bestWindow.length > 1 ? 's' : '')
+        + ' of favorable conditions</div>';
+    }
+    recHTML += '</div></div>';
+    recEl.innerHTML = recHTML;
+
+    if (d.seasonInfo) {
+      var siEl = document.getElementById('season-info');
+      siEl.innerHTML = '<div class="season-info-box">'
+        + '<div>' + d.seasonInfo.message + '</div>'
+        + '<div class="season-info-dates">'
+        + '<span><strong>Tap by:</strong> ' + dayName(d.seasonInfo.tapByDate) + '</span>'
+        + '<span><strong>Season end:</strong> ' + dayName(d.seasonInfo.seasonEndDate) + '</span>'
+        + '</div></div>';
+      document.getElementById('season-info-card').style.display = '';
+    }
+
+    var listEl = document.getElementById('forecast-list');
+    listEl.innerHTML = '';
+    d.days.forEach(function(day) {
+      var wrapper = document.createElement('div');
+      wrapper.className = 'forecast-day-wrapper';
+
+      var row = document.createElement('div');
+      row.className = 'forecast-day ' + day.rating;
+      row.innerHTML =
+        '<span class="day-name">' + dayName(day.date) + '</span>' +
+        '<span class="temps"><span class="temp-low">' + tempStr(day.tempLow) + '</span><span class="temp-arrow">\\u2192</span><span class="temp-high">' + tempStr(day.tempHigh) + '</span></span>' +
+        '<span class="day-rating ' + day.rating + '">' + ratingLabel(day.rating) + '</span>';
+
+      var detailHTML = '';
+      var sourceNames = d.sources ? Object.keys(d.sources) : [];
+      sourceNames.forEach(function(name) {
+        var sd = d.sources[name][day.date];
+        if (sd) {
+          detailHTML +=
+            '<div class="source-row">' +
+            '<span class="source-name">' + name + '</span>' +
+            '<span class="source-temps"><span class="temp-low">' + tempStr(sd.tempLow) + '</span><span class="temp-arrow">\\u2192</span><span class="temp-high">' + tempStr(sd.tempHigh) + '</span></span>' +
+            '</div>';
+        }
+      });
+
+      var detail = document.createElement('div');
+      detail.className = 'source-detail';
+      detail.innerHTML = detailHTML;
+
+      row.addEventListener('click', function() {
+        detail.classList.toggle('open');
+      });
+
+      wrapper.appendChild(row);
+      wrapper.appendChild(detail);
+      listEl.appendChild(wrapper);
+    });
+  }
+
+  window.setScenario = function(name) {
+    if (!DEMO_DATA[name]) return;
+    forecastData = DEMO_DATA[name];
+    document.querySelectorAll('.scenario-tab').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-scenario') === name);
+    });
+    document.getElementById('scenario-caption').textContent = CAPTIONS[name] || '';
+    render();
+    safeCapture('demo_scenario_viewed', { scenario: name });
+  };
+
+  setScenario('${DEMO_SCENARIO_ORDER[0]}');
+})();
+</script>
+</body>
+</html>`;
+}
+
 // ── Worker entry point ─────────────────────────────────────────────────────
 
 export default {
@@ -1884,6 +2382,12 @@ export default {
           'Content-Type': 'text/plain',
           'Cache-Control': 'public, max-age=86400',
         },
+      });
+    }
+
+    if (url.pathname === '/demo') {
+      return new Response(getDemoHTML(env.POSTHOG_API_KEY), {
+        headers: { 'Content-Type': 'text/html;charset=UTF-8' },
       });
     }
 

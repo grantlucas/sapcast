@@ -8,16 +8,20 @@ collection.
 
 ## Demo
 
-**[See Sapcast in action →](DEMO.md)** — an annotated walkthrough of every
-feature, from the five recommendation states to the per-model forecast
-breakdown and the tapping guides.
+**[Try the live demo →](https://sapcast.ca/demo)** — the real app, seeded
+with a hand-picked week instead of a location fetch, so you can click through
+all five recommendation states (tap now, upcoming, one good day, too cold,
+season over) any time of year.
 
-Sapcast is only useful for about three weeks a year, so the walkthrough runs
-against synthetic mid-season weather (see
-[`demo/demo-server.mjs`](demo/demo-server.mjs)) scored by the real production
-code.
+Sapcast is only useful for about three weeks a year, so the hosted demo runs
+against synthetic mid-season weather scored by the real production code —
+same UI, same scoring, just not your actual forecast.
 
-[![Sapcast forecast overview](screenshots/overview-desktop.png)](DEMO.md)
+For the exhaustive, screenshot-by-screenshot tour (location handling, unit
+toggle, per-model breakdown, mobile layout, and how to reproduce the
+screenshots locally), see **[DEMO.md](DEMO.md)**.
+
+[![Sapcast forecast overview](screenshots/overview-desktop.png)](https://sapcast.ca/demo)
 
 ## How it works
 
